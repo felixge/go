@@ -6,7 +6,13 @@ package runtime
 
 import "unsafe"
 
-var labelSync uintptr
+var (
+	labelSync uintptr
+	// @TODO(fg) replace []*g with a doubly linked list to reduce
+	// deregisterLabels complexity?
+	labelgs    map[string]map[string][]*g
+	labelglock mutex
+)
 
 //go:linkname runtime_setProfLabel runtime/pprof.runtime_setProfLabel
 func runtime_setProfLabel(labels unsafe.Pointer) {
@@ -31,10 +37,67 @@ func runtime_setProfLabel(labels unsafe.Pointer) {
 	if raceenabled {
 		racereleasemerge(unsafe.Pointer(&labelSync))
 	}
-	getg().labels = labels
+	gp := getg()
+	deregisterLabels(gp)
+	gp.labels = labels
+	registerLabels(gp)
 }
 
 //go:linkname runtime_getProfLabel runtime/pprof.runtime_getProfLabel
 func runtime_getProfLabel() unsafe.Pointer {
 	return getg().labels
+}
+
+func registerLabels(gp *g) {
+	labels := (*map[string]string)(gp.labels)
+	if labels == nil {
+		return
+	}
+
+	lock(&labelglock)
+	if labelgs == nil {
+		labelgs = make(map[string]map[string][]*g, len(*labels))
+	}
+	for key, val := range *labels {
+		if valgs, ok := labelgs[key]; ok {
+			valgs[val] = append(valgs[val], gp)
+		} else {
+			labelgs[key] = map[string][]*g{val: []*g{gp}}
+		}
+	}
+	unlock(&labelglock)
+}
+
+func deregisterLabels(gp *g) {
+	// deregister gp in labelgs for fast goroutine profiling by labels
+	labels := (*map[string]string)(gp.labels)
+	if labels == nil {
+		return
+	}
+
+	lock(&labelglock)
+	for key, val := range *labels {
+		valgs, ok := labelgs[key]
+		if !ok {
+			panic("bug: key not found in labelgs")
+		}
+		oldGs, ok := valgs[val]
+		if !ok {
+			panic("bug: val not found in valgs")
+		}
+		var found bool
+		newGs := make([]*g, 0, len(oldGs)-1)
+		for _, oldg := range oldGs {
+			if oldg != gp {
+				newGs = append(newGs, oldg)
+			} else {
+				found = true
+			}
+		}
+		valgs[val] = newGs
+		if !found {
+			panic("bug: gp not found in oldGs")
+		}
+	}
+	unlock(&labelglock)
 }

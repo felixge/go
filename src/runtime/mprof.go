@@ -716,8 +716,17 @@ func runtime_goroutineProfileWithLabels(p []StackRecord, labels []unsafe.Pointer
 	return goroutineProfileWithLabels(p, labels)
 }
 
-// labels may be nil. If labels is non-nil, it must have the same length as p.
+//go:linkname runtime_goroutineProfileWithLabelsAndFilter runtime/pprof.runtime_goroutineProfileWithLabelsAndFilter
+func runtime_goroutineProfileWithLabelsAndFilter(p []StackRecord, labels []unsafe.Pointer, filter map[string]string) (n int, ok bool) {
+	return goroutineProfileWithLabelsAndFilter(p, labels, filter)
+}
+
 func goroutineProfileWithLabels(p []StackRecord, labels []unsafe.Pointer) (n int, ok bool) {
+	return goroutineProfileWithLabelsAndFilter(p, labels, nil)
+}
+
+// labels may be nil. If labels is non-nil, it must have the same length as p.
+func goroutineProfileWithLabelsAndFilter(p []StackRecord, labels []unsafe.Pointer, filter map[string]string) (n int, ok bool) {
 	if labels != nil && len(labels) != len(p) {
 		labels = nil
 	}
@@ -731,8 +740,25 @@ func goroutineProfileWithLabels(p []StackRecord, labels []unsafe.Pointer) (n int
 
 	stopTheWorld("profile")
 
+	var filtergs []*g
+	if filter == nil {
+		filtergs = allgs
+	} else {
+		for key, val := range filter {
+			valgs, ok := labelgs[key]
+			if !ok {
+				continue
+			}
+			labelgs, ok := valgs[val]
+			if !ok {
+				continue
+			}
+			filtergs = append(filtergs, labelgs...)
+		}
+	}
+
 	n = 1
-	for _, gp1 := range allgs {
+	for _, gp1 := range filtergs {
 		if isOK(gp1) {
 			n++
 		}
@@ -757,7 +783,7 @@ func goroutineProfileWithLabels(p []StackRecord, labels []unsafe.Pointer) (n int
 		}
 
 		// Save other goroutines.
-		for _, gp1 := range allgs {
+		for _, gp1 := range filtergs {
 			if isOK(gp1) {
 				if len(r) == 0 {
 					// Should be impossible, but better to return a
@@ -787,6 +813,20 @@ func goroutineProfileWithLabels(p []StackRecord, labels []unsafe.Pointer) (n int
 func GoroutineProfile(p []StackRecord) (n int, ok bool) {
 
 	return goroutineProfileWithLabels(p, nil)
+}
+
+func GoroutineCount(labels map[string]string) int {
+	var n int
+	lock(&labelglock)
+	for key, val := range labels {
+		if valgs, ok := labelgs[key]; ok {
+			if gs, ok := valgs[val]; ok {
+				n += len(gs)
+			}
+		}
+	}
+	unlock(&labelglock)
+	return n
 }
 
 func saveg(pc, sp uintptr, gp *g, r *StackRecord) {

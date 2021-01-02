@@ -3317,7 +3317,9 @@ func goexit0(gp *g) {
 	gp.writebuf = nil
 	gp.waitreason = 0
 	gp.param = nil
+	deregisterLabels(gp)
 	gp.labels = nil
+
 	gp.timer = nil
 
 	if gcBlackenEnabled != 0 && gp.gcAssistBytes > 0 {
@@ -3996,6 +3998,7 @@ func newproc1(fn *funcval, argp unsafe.Pointer, narg int32, callergp *g, callerp
 	newg.startpc = fn.fn
 	if _g_.m.curg != nil {
 		newg.labels = _g_.m.curg.labels
+		registerLabels(newg)
 	}
 	if isSystemGoroutine(newg, false) {
 		atomic.Xadd(&sched.ngsys, +1)

@@ -5,12 +5,15 @@
 package runtime_test
 
 import (
+	"context"
 	"flag"
 	"io"
 	. "runtime"
 	"runtime/debug"
+	"runtime/pprof"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -334,6 +337,35 @@ func TestAppendSliceGrowth(t *testing.T) {
 	}
 }
 
+func TestGoroutineProfileLabels(t *testing.T) {
+	ctx := pprof.WithLabels(context.Background(), pprof.Labels("a", "1"))
+	pprof.SetGoroutineLabels(ctx)
+
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		started <- struct{}{}
+		stopped <- struct{}{}
+	}()
+	<-started
+
+	if got, want := GoroutineCount(map[string]string{"a": "1"}), 2; got != want {
+		t.Fatalf("got=%d want=%d", got, want)
+	}
+	if got, want := GoroutineCount(map[string]string{"a": "2"}), 0; got != want {
+		t.Fatalf("got=%d want=%d", got, want)
+	}
+
+	<-stopped
+	for i := 0; i < 10; i++ {
+		if n := GoroutineCount(map[string]string{"a": "1"}); n == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("GoroutineCount did not converge")
+}
+
 func TestGoroutineProfileTrivial(t *testing.T) {
 	// Calling GoroutineProfile twice in a row should find the same number of goroutines,
 	// but it's possible there are goroutines just about to exit, so we might end up
@@ -354,6 +386,55 @@ func TestGoroutineProfileTrivial(t *testing.T) {
 		}
 	}
 }
+
+//func BenchmarkGoroutineProfileScalability(b *testing.B) {
+//for g := 1; g <= 1024*1024; g = g * 2 {
+//g := g
+//name := fmt.Sprintf("%d goroutines", g)
+//b.Run(name, func(b *testing.B) {
+//initalRoutines, _ := GoroutineProfile(nil)
+
+//readyCh := make(chan struct{})
+//stopCh := make(chan struct{})
+//for i := 0; i < g; i++ {
+//go func() {
+//readyCh <- struct{}{}
+//stopCh <- struct{}{}
+//}()
+//<-readyCh
+//}
+
+////currentRoutines, _ := GoroutineProfile(nil)
+//p := make([]StackRecord, 100)
+
+//b.ResetTimer()
+//for i := 0; i < b.N; i++ {
+//n, ok := GoroutineProfile(p)
+//if !ok {
+//b.Fatal("failed to create GoroutineProfile")
+//}
+//fmt.Printf("%d %d\n", n, len(p))
+//if gotRoutines := n - initalRoutines; gotRoutines != g {
+////b.Logf("want %d goroutines, but got %d on iteration %d", g, n, i)
+//}
+//}
+//b.StopTimer()
+//for i := 0; i < g; i++ {
+//<-stopCh
+//}
+//start := time.Now()
+//for i := 0; ; i++ {
+//currentRoutines, _ := GoroutineProfile(nil)
+//if currentRoutines == initalRoutines {
+//break
+//}
+//if time.Since(start) > 10*time.Second {
+//b.Fatalf("%d goroutines still running, want %d", currentRoutines, initalRoutines)
+//}
+//}
+//})
+//}
+//}
 
 func TestVersion(t *testing.T) {
 	// Test that version does not contain \r or \n.
