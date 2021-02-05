@@ -398,17 +398,22 @@ func blockevent(cycles int64, skip int) {
 	if cycles <= 0 {
 		cycles = 1
 	}
-	if blocksampled(cycles) {
+	if cycles = blocksampled(cycles); cycles > 0 {
 		saveblockevent(cycles, skip+1, blockProfile)
 	}
 }
 
-func blocksampled(cycles int64) bool {
+func blocksampled(cycles int64) int64 {
 	rate := int64(atomic.Load64(&blockprofilerate))
-	if rate <= 0 || (rate > cycles && int64(fastrand())%rate > cycles) {
-		return false
+	if rate <= 0 {
+		return 0
+	} else if rate > cycles {
+		if int64(fastrand())%rate > cycles {
+			return 0
+		}
+		return rate
 	}
-	return true
+	return cycles
 }
 
 func saveblockevent(cycles int64, skip int, which bucketType) {
