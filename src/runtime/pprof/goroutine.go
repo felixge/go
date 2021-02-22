@@ -1,13 +1,16 @@
 package pprof
 
 import (
+	"math/rand"
 	"runtime"
 	"time"
 	"unsafe"
 )
 
 type GoroutineProfiler struct {
-	stacks []runtime.StackRecord
+	stacks        []runtime.StackRecord
+	labelmaps     []unsafe.Pointer
+	maxGoroutines int
 }
 
 // NewGoroutineProfiler returns a new goroutine profiler. The profiler will use
@@ -20,21 +23,20 @@ func NewGoroutineProfiler() *GoroutineProfiler {
 // GoroutineProfile returns a goroutine profile. The slice and contained data
 // can be overwritten by subsequent calls to GoroutineProfile.
 func (g *GoroutineProfiler) GoroutineProfile() []*GoroutineRecord {
-	var labelmaps []unsafe.Pointer
 	for {
-		n, ok := runtime_goroutineProfileWithLabels(g.stacks, labelmaps)
+		n, ok := runtime_goroutineProfileWithLabels(g.stacks, g.labelmaps)
 		if ok {
 			g.stacks = g.stacks[0:n]
 			break
 		}
 		g.stacks = make([]runtime.StackRecord, int(float64(n)*1.1))
-		labelmaps = make([]unsafe.Pointer, len(g.stacks))
+		g.labelmaps = make([]unsafe.Pointer, len(g.stacks))
 	}
 
 	gs := make([]*GoroutineRecord, len(g.stacks))
 	for i, stack := range g.stacks {
 		var labels map[string]string
-		if lm := (*labelMap)(labelmaps[i]); lm != nil {
+		if lm := (*labelMap)(g.labelmaps[i]); lm != nil {
 			labels = *lm
 		}
 
@@ -43,13 +45,22 @@ func (g *GoroutineProfiler) GoroutineProfile() []*GoroutineRecord {
 			Labels: labels,
 		}
 	}
+
+	// TODO(fg) do this efficiently in runtime pkg
+	if g.maxGoroutines > 0 {
+		rand.Shuffle(len(gs), func(i, j int) {
+			gs[i], gs[j] = gs[j], gs[i]
+		})
+		gs = gs[0:g.maxGoroutines]
+	}
+
 	return gs
 }
 
 // SetMaxGoroutines limits the profiler to return a maximum of n randomly
 // chosen goroutines. TODO(fg) implement!
 func (g *GoroutineProfiler) SetMaxGoroutines(n int) {
-
+	g.maxGoroutines = n
 }
 
 // GoroutineRecord represents a single goroutine and the profiling information

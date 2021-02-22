@@ -2,32 +2,78 @@ package pprof
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 )
 
-func TestGoroutineProfiler_Labels(t *testing.T) {
-	labels := Labels("foo", "bar")
-	ctx := WithLabels(context.Background(), labels)
-	ch := make(chan struct{})
-	go Do(ctx, labels, func(context.Context) {
-		ch <- struct{}{}
-		<-ch
+func TestGoroutineProfiler(t *testing.T) {
+	t.Run("basics", func(t *testing.T) {
+		cleanup := spawnGoroutines(3, "Labels")
+		defer cleanup()
+
+		var got int
+		g := NewGoroutineProfiler()
+		for _, g := range g.GoroutineProfile() {
+			if g.Labels != nil && g.Labels["test"] == "Labels" {
+				got++
+			}
+		}
+		if want := 3; got != want {
+			t.Fatalf("got=%d want=%d goroutines", got, want)
+		}
 	})
 
-	// wait for goroutine above, defer shutting it down
-	<-ch
-	defer close(ch)
+	t.Run("SetMaxGoroutines", func(t *testing.T) {
+		cleanup := spawnGoroutines(100, "SetMaxGoroutines")
+		defer cleanup()
 
-	var found int
-	g := NewGoroutineProfiler()
-	for _, g := range g.GoroutineProfile() {
-		if g.Labels != nil && g.Labels["foo"] == "bar" {
-			found++
+		g := NewGoroutineProfiler()
+		g.SetMaxGoroutines(10)
+
+		var randomized bool
+		var prev []*GoroutineRecord
+		for i := 0; i < 100; i++ {
+			gs := g.GoroutineProfile()
+			if got, want := len(gs), 10; got != want {
+				t.Fatalf("got=%d want=%d goroutines", got, want)
+			}
+
+			if prev != nil {
+				for i, g := range gs {
+					if !reflect.DeepEqual(g.Labels, prev[i].Labels) {
+						randomized = true
+						break
+					}
+				}
+			}
+			prev = gs
 		}
-	}
-	if found != 1 {
-		t.Fatalf("found %d goroutines with matching label", found)
-	}
+
+		if !randomized {
+			t.Fatal("goroutines not randomized")
+		}
+	})
 }
 
+func spawnGoroutines(n int, testLabel string) func() {
+	launched := make(chan struct{}, n)
+	done := make(chan struct{})
+	for i := 0; i < n; i++ {
+		labels := Labels("test", testLabel, "test.id", fmt.Sprintf("%d", i))
+		go Do(context.Background(), labels, func(context.Context) {
+			launched <- struct{}{}
+			done <- struct{}{}
+		})
+	}
 
+	for i := 0; i < n; i++ {
+		<-launched
+	}
+
+	return func() {
+		for i := 0; i < n; i++ {
+			<-done
+		}
+	}
+}
