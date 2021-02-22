@@ -371,12 +371,13 @@ func mProf_Free(b *bucket, size uintptr) {
 
 var blockprofilerate uint64 // in CPU ticks
 
-// SetBlockProfileRate controls the fraction of goroutine blocking events
-// that are reported in the blocking profile. The profiler aims to sample
-// an average of one blocking event per rate nanoseconds spent blocked.
-//
-// To include every blocking event in the profile, pass rate = 1.
-// To turn off profiling entirely, pass rate <= 0.
+// SetBlockProfileRate controls the fraction of goroutine blocking events that
+// are reported in the blocking profile. A rate <= 0 (default) turns off block
+// profiling. If the rate is 1, every blocking event is captured. A rate > 1
+// specifies the sampling threshold in nanoseconds and captures every blocking
+// event with a duration >= rate as well as a duration/rate fraction of
+// randomly chosen events with a duration < rate. Block profiles are biased
+// towards events with a duration > rate as a result of this sampling.
 func SetBlockProfileRate(rate int) {
 	var r int64
 	if rate <= 0 {
