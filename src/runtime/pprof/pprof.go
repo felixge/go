@@ -676,6 +676,12 @@ func countGoroutine() int {
 // runtime_goroutineProfileWithLabels is defined in runtime/mprof.go
 func runtime_goroutineProfileWithLabels(p []runtime.StackRecord, labels []unsafe.Pointer) (n int, ok bool)
 
+// runtime_goroutineProfileWithLabels2 is defined in runtime/mprof.go
+func runtime_goroutineProfileWithLabels2(
+	p []runtime.StackRecord,
+	labels []unsafe.Pointer,
+) (n int, ok bool)
+
 // writeGoroutine writes the current runtime GoroutineProfile to w.
 func writeGoroutine(w io.Writer, debug int) error {
 	if debug >= 2 {
