@@ -16,6 +16,7 @@ type GoroutineProfiler struct {
 	gopcs         []uintptr
 	waitsinces    []int64
 	maxGoroutines int
+	labelFilter   map[string]string
 	offset        uint
 }
 
@@ -48,6 +49,7 @@ func (g *GoroutineProfiler) GoroutineProfile() []*GoroutineRecord {
 			g.statuses,
 			g.gopcs,
 			g.waitsinces,
+			g.labelFilter,
 			g.offset,
 		)
 		if !more || n == l {
@@ -77,9 +79,20 @@ func (g *GoroutineProfiler) GoroutineProfile() []*GoroutineRecord {
 	return gs
 }
 
-// SetMaxGoroutines TODO(fg) document this correctly!
+// SetMaxGoroutines sets the maximum number of goroutines to be returned by
+// GoroutineProfile(). If set to 0 (default) all goroutines will be returned
+// which required a O(N) stop-the-world phase that might last 1ms per 1k
+// goroutines or longer. TODO finish writing this
 func (g *GoroutineProfiler) SetMaxGoroutines(n int) {
 	g.maxGoroutines = n
+}
+
+// SetLabelFilter TODO(fg) finish writing this
+func (g *GoroutineProfiler) SetLabelFilter(filter LabelSet) {
+	g.labelFilter = map[string]string{}
+	for _, label := range filter.list {
+		g.labelFilter[label.key] = label.value
+	}
 }
 
 // GoroutineRecord represents a single goroutine and the profiling information

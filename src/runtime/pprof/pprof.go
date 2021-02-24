@@ -684,6 +684,7 @@ func runtime_goroutineProfileWithLabels2(
 	statuses []string,
 	gopcs []uintptr,
 	waitsinces []int64,
+	labelFilter map[string]string,
 	offset uint,
 ) (n int, ok bool)
 

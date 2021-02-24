@@ -786,9 +786,19 @@ func runtime_goroutineProfileWithLabels2(
 	statuses []string,
 	gopcs []uintptr,
 	waitsinces []int64,
+	labelFilter map[string]string,
 	offset uint,
 ) (n int, ok bool) {
-	return goroutineProfileWithLabels2(p, labels, ids, statuses, gopcs, waitsinces, offset)
+	return goroutineProfileWithLabels2(
+		p,
+		labels,
+		ids,
+		statuses,
+		gopcs,
+		waitsinces,
+		labelFilter,
+		offset,
+	)
 }
 
 // labels may be nil. If labels is non-nil, it must have the same length as p.
@@ -801,6 +811,7 @@ func goroutineProfileWithLabels2(
 	statuses []string,
 	gopcs []uintptr,
 	waitsinces []int64,
+	labelFilter map[string]string,
 	offset uint,
 ) (n int, more bool) {
 	// TODO(fg) more safeguards against stupid input params
@@ -817,6 +828,21 @@ func goroutineProfileWithLabels2(
 		// Checking isSystemGoroutine here makes GoroutineProfile
 		// consistent with both NumGoroutine and Stack.
 		return gp1 != gp && readgstatus(gp1) != _Gdead && !isSystemGoroutine(gp1, false)
+	}
+
+	matchesLabels := func(gp1 *g) bool {
+		labelsMatch := true
+		if len(labelFilter) > 0 {
+			// TODO(fg) gnarly type cast, should rethink gp.labels data type
+			labelP := (*map[string]string)(gp1.labels)
+			for k, v := range labelFilter {
+				if labelP == nil || (*labelP)[k] != v {
+					labelsMatch = false
+					break
+				}
+			}
+		}
+		return labelsMatch
 	}
 
 	i := 0
@@ -859,13 +885,14 @@ func goroutineProfileWithLabels2(
 	stopTheWorld("profile")
 
 	// Save current goroutine.
-	sp := getcallersp()
-	pc := getcallerpc()
-	systemstack(func() {
-		saveg(pc, sp, gp, &p[i])
-	})
-
-	extractMeta(gp)
+	if matchesLabels(gp) {
+		sp := getcallersp()
+		pc := getcallerpc()
+		systemstack(func() {
+			saveg(pc, sp, gp, &p[i])
+		})
+		extractMeta(gp)
+	}
 
 	// Save other goroutines.
 	for j := 0; j < len(allgs); j++ {
@@ -873,15 +900,17 @@ func goroutineProfileWithLabels2(
 			more = true
 			break
 		}
+
 		gp1 := allgs[(uint(j)+offset)%uint(len(allgs))]
-		if isOK(gp1) {
-			saveg(^uintptr(0), ^uintptr(0), gp1, &p[i])
-			extractMeta(gp1)
+		if !isOK(gp1) || !matchesLabels(gp1) {
+			continue
 		}
+		saveg(^uintptr(0), ^uintptr(0), gp1, &p[i])
+		extractMeta(gp1)
 	}
 
 	startTheWorld()
-	return len(p), more
+	return i, more
 }
 
 // GoroutineProfile returns n, the number of records in the active goroutine stack profile.

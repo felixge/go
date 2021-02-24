@@ -15,9 +15,6 @@ func TestGoroutineProfiler(t *testing.T) {
 		var got int
 		g := NewGoroutineProfiler()
 		for _, g := range g.GoroutineProfile() {
-			if g.Labels == nil {
-				fmt.Printf("%s\n", g)
-			}
 			if g.Labels != nil && g.Labels["test"] == "Labels" {
 				got++
 			}
@@ -55,6 +52,21 @@ func TestGoroutineProfiler(t *testing.T) {
 
 		if !randomized {
 			t.Fatal("goroutines not randomized")
+		}
+	})
+
+	t.Run("SetLabelFilter", func(t *testing.T) {
+		cleanup := spawnGoroutines(3, "SetLabelFilter")
+		defer cleanup()
+
+		g := NewGoroutineProfiler()
+		g.SetLabelFilter(Labels("test", "SetLabelFilter"))
+		gs := g.GoroutineProfile()
+		for _, g := range gs {
+			fmt.Printf("%v\n", g.Labels)
+		}
+		if got, want := len(gs), 3; got != want {
+			t.Fatalf("got=%d want=%d goroutines", got, want)
 		}
 	})
 }
