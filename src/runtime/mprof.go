@@ -779,12 +779,35 @@ func goroutineProfileWithLabels(p []StackRecord, labels []unsafe.Pointer) (n int
 }
 
 //go:linkname runtime_goroutineProfileWithLabels2 runtime/pprof.runtime_goroutineProfileWithLabels2
-func runtime_goroutineProfileWithLabels2(p []StackRecord, labels []unsafe.Pointer) (n int, ok bool) {
-	return goroutineProfileWithLabels(p, labels)
+func runtime_goroutineProfileWithLabels2(
+	p []StackRecord,
+	labels []unsafe.Pointer,
+	ids []int64,
+	statuses []string,
+	gopcs []uintptr,
+	waitsinces []int64,
+	offset uint,
+) (n int, ok bool) {
+	return goroutineProfileWithLabels2(p, labels, ids, statuses, gopcs, waitsinces, offset)
 }
 
 // labels may be nil. If labels is non-nil, it must have the same length as p.
-func goroutineProfileWithLabels2(p []StackRecord, labels []unsafe.Pointer) (n int, ok bool) {
+// TODO(fg) is there a better way than passing tons of slices in here?
+// TODO(fg) unify this with the existing goroutineProfileWithLabels func?
+func goroutineProfileWithLabels2(
+	p []StackRecord,
+	labels []unsafe.Pointer,
+	ids []int64,
+	statuses []string,
+	gopcs []uintptr,
+	waitsinces []int64,
+	offset uint,
+) (n int, more bool) {
+	// TODO(fg) more safeguards against stupid input params
+	if len(p) == 0 {
+		return 0, true
+	}
+
 	if labels != nil && len(labels) != len(p) {
 		labels = nil
 	}
@@ -796,48 +819,69 @@ func goroutineProfileWithLabels2(p []StackRecord, labels []unsafe.Pointer) (n in
 		return gp1 != gp && readgstatus(gp1) != _Gdead && !isSystemGoroutine(gp1, false)
 	}
 
-	stopTheWorld("profile")
+	i := 0
+	extractMeta := func(gp *g) {
+		if labels != nil {
+			labels[i] = gp.labels
+		}
+		if ids != nil {
+			ids[i] = gp.goid
+		}
+		if statuses != nil {
+			// TODO(fg) code below copied from goroutineheader(), dedupe
+			// TODO(fg) do we really need this under stop-the-world?
+			gpstatus := readgstatus(gp)
+			gpstatus &^= _Gscan // drop the scan bit
 
-	ok = true
-	r, lbl := p, labels
+			// Basic string status
+			var status string
+			if 0 <= gpstatus && gpstatus < uint32(len(gStatusStrings)) {
+				status = gStatusStrings[gpstatus]
+			} else {
+				status = "???"
+			}
+
+			// Override.
+			if gpstatus == _Gwaiting && gp.waitreason != waitReasonZero {
+				status = gp.waitreason.String()
+			}
+			statuses[i] = status
+		}
+		if waitsinces != nil && gp.waitsince != 0 {
+			waitsinces[i] = nanotime() - gp.waitsince
+		}
+		if gopcs != nil {
+			gopcs[i] = gp.gopc
+		}
+		i++
+	}
+
+	stopTheWorld("profile")
 
 	// Save current goroutine.
 	sp := getcallersp()
 	pc := getcallerpc()
 	systemstack(func() {
-		saveg(pc, sp, gp, &r[0])
+		saveg(pc, sp, gp, &p[i])
 	})
-	r = r[1:]
 
-	// If we have a place to put our goroutine labelmap, insert it there.
-	if labels != nil {
-		lbl[0] = gp.labels
-		lbl = lbl[1:]
-	}
+	extractMeta(gp)
 
 	// Save other goroutines.
-	for _, gp1 := range allgs {
-		if len(r) == 0 {
+	for j := 0; j < len(allgs); j++ {
+		if i >= len(p) {
+			more = true
 			break
 		}
-
+		gp1 := allgs[(uint(j)+offset)%uint(len(allgs))]
 		if isOK(gp1) {
-			if len(r) == 0 {
-				// Should be impossible, but better to return a
-				// truncated profile than to crash the entire process.
-				break
-			}
-			saveg(^uintptr(0), ^uintptr(0), gp1, &r[0])
-			if labels != nil {
-				lbl[0] = gp1.labels
-				lbl = lbl[1:]
-			}
-			r = r[1:]
+			saveg(^uintptr(0), ^uintptr(0), gp1, &p[i])
+			extractMeta(gp1)
 		}
 	}
 
 	startTheWorld()
-	return n, ok
+	return len(p), more
 }
 
 // GoroutineProfile returns n, the number of records in the active goroutine stack profile.

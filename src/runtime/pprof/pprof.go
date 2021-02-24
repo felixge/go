@@ -680,6 +680,11 @@ func runtime_goroutineProfileWithLabels(p []runtime.StackRecord, labels []unsafe
 func runtime_goroutineProfileWithLabels2(
 	p []runtime.StackRecord,
 	labels []unsafe.Pointer,
+	ids []int64,
+	statuses []string,
+	gopcs []uintptr,
+	waitsinces []int64,
+	offset uint,
 ) (n int, ok bool)
 
 // writeGoroutine writes the current runtime GoroutineProfile to w.

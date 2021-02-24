@@ -15,6 +15,9 @@ func TestGoroutineProfiler(t *testing.T) {
 		var got int
 		g := NewGoroutineProfiler()
 		for _, g := range g.GoroutineProfile() {
+			if g.Labels == nil {
+				fmt.Printf("%s\n", g)
+			}
 			if g.Labels != nil && g.Labels["test"] == "Labels" {
 				got++
 			}

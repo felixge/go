@@ -1,7 +1,9 @@
 package pprof
 
 import (
+	"fmt"
 	"runtime"
+	"strings"
 	"time"
 	"unsafe"
 )
@@ -9,6 +11,10 @@ import (
 type GoroutineProfiler struct {
 	stacks        []runtime.StackRecord
 	labelmaps     []unsafe.Pointer
+	ids           []int64
+	statuses      []string
+	gopcs         []uintptr
+	waitsinces    []int64
 	maxGoroutines int
 	offset        uint
 }
@@ -24,13 +30,31 @@ func NewGoroutineProfiler() *GoroutineProfiler {
 // can be overwritten by subsequent calls to GoroutineProfile.
 func (g *GoroutineProfiler) GoroutineProfile() []*GoroutineRecord {
 	for {
-		n, ok := runtime_goroutineProfileWithLabels2(g.stacks, g.labelmaps)
-		if ok {
+		l := g.maxGoroutines
+		if l == 0 {
+			l = int(float64(runtime.NumGoroutine()) * 1.1)
+		}
+		g.stacks = make([]runtime.StackRecord, l)
+		g.labelmaps = make([]unsafe.Pointer, l)
+		g.ids = make([]int64, l)
+		g.gopcs = make([]uintptr, l)
+		g.waitsinces = make([]int64, l)
+		g.statuses = make([]string, l)
+
+		n, more := runtime_goroutineProfileWithLabels2(
+			g.stacks,
+			g.labelmaps,
+			g.ids,
+			g.statuses,
+			g.gopcs,
+			g.waitsinces,
+			g.offset,
+		)
+		if !more || n == l {
 			g.stacks = g.stacks[0:n]
+			g.offset += uint(n)
 			break
 		}
-		g.stacks = make([]runtime.StackRecord, int(float64(n)*1.1))
-		g.labelmaps = make([]unsafe.Pointer, len(g.stacks))
 	}
 
 	gs := make([]*GoroutineRecord, len(g.stacks))
@@ -41,30 +65,19 @@ func (g *GoroutineProfiler) GoroutineProfile() []*GoroutineRecord {
 		}
 
 		gs[i] = &GoroutineRecord{
-			Stack:  stack.Stack(),
-			Labels: labels,
+			ID:        g.ids[i],
+			Stack:     stack.Stack(),
+			Status:    g.statuses[i],
+			CreatedBy: g.gopcs[i],
+			Wait:      time.Duration(g.waitsinces[i]),
+			Labels:    labels,
 		}
-	}
-
-	// TODO(fg) do this efficiently in runtime pkg
-	if g.maxGoroutines > 0 {
-		gs = sample(g.maxGoroutines, g.offset, gs)
-		g.offset += uint(len(gs))
 	}
 
 	return gs
 }
 
-func sample(n int, offset uint, gs []*GoroutineRecord) []*GoroutineRecord {
-	s := make([]*GoroutineRecord, n)
-	for i := 0; i < n; i++ {
-		s[i] = gs[(uint(i)+offset)%uint(len(gs))]
-	}
-	return s
-}
-
-// SetMaxGoroutines limits the profiler to return a maximum of n randomly
-// chosen goroutines. TODO(fg) implement!
+// SetMaxGoroutines TODO(fg) document this correctly!
 func (g *GoroutineProfiler) SetMaxGoroutines(n int) {
 	g.maxGoroutines = n
 }
@@ -72,16 +85,54 @@ func (g *GoroutineProfiler) SetMaxGoroutines(n int) {
 // GoroutineRecord represents a single goroutine and the profiling information
 // associated with it.
 type GoroutineRecord struct {
+	// ID is the id of the goroutine. TODO(fg) I know this is a controversial
+	// thing to expose. This field could be made private.
+	ID int64
 	// Stack is the stack trace of this record in form of program counter (pc)
 	// locations.
 	Stack []uintptr
 	// Labels holds the profiler labels applied to the goroutine. TODO(fg) figure
 	// out if this type makes sense.
 	Labels map[string]string
-	// TODO(fg) Implement
+	// Status describes the state of the goroutine. TODO(fg) should we expose
+	// the real status and waitreason separately?
 	Status string
-	// TODO(fg) Implement
-	Waitsince time.Time
-	// TODO(fg) Implement
+	// Wait has the approximate amount of time that the GC has been parked for as
+	// determined by the first GC after parking. TODO(fg) should this be exposed
+	// as time.Time?
+	Wait time.Duration
+	// CreatedBy is the program counter of the go statement that created this
+	// goroutine.
 	CreatedBy uintptr
+}
+
+// String returns the goroutine in a format similar to runtime.Stack().
+func (g *GoroutineRecord) String() string {
+	frames := runtime.CallersFrames(g.Stack)
+	var waitd string
+	if g.Wait != 0 {
+		// TODO(fg) round to minutes like runtime.Stack()?
+		waitd = ", " + g.Wait.String()
+	}
+	lines := []string{fmt.Sprintf("goroutine %d [%s%s]:", g.ID, g.Status, waitd)}
+	for {
+		// TODO(fg) should we skip some internal frames here? e.g. the last
+		// goexit() frame that seems to be everywhere?
+		frame, more := frames.Next()
+		// @TODO(fg) add labels here? runtime.Stack() doesn't do this right now
+		// but it's been proposed in the past (find link!)
+		lines = append(lines, frame.Function+"()")
+		// TODO(fg) can be add the offset into the func here? e.g. +0x9f
+		lines = append(lines, fmt.Sprintf("\t%s:%d", frame.File, frame.Line))
+		if !more {
+			break
+		}
+	}
+	if g.CreatedBy != 0 {
+		frame, _ := runtime.CallersFrames([]uintptr{g.CreatedBy}).Next()
+		lines = append(lines, fmt.Sprintf("created by %s", frame.Function))
+		// TODO(fg) can be add the offset into the func here? e.g. +0x9f
+		lines = append(lines, fmt.Sprintf("\t%s:%d", frame.File, frame.Line))
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
