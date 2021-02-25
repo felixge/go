@@ -88,11 +88,17 @@ func (g *GoroutineProfiler) SetMaxGoroutines(n int) {
 }
 
 // SetLabelFilter TODO(fg) finish writing this
+// TODO(fg) figure out a way to register this with the runtime. Will probably
+// require a Close() method on the profiler.
 func (g *GoroutineProfiler) SetLabelFilter(filter LabelSet) {
 	g.labelFilter = map[string]string{}
 	for _, label := range filter.list {
 		g.labelFilter[label.key] = label.value
 	}
+}
+
+// TODO(fg) implement
+func (g *GoroutineProfiler) SetStackDepth(n int) {
 }
 
 // GoroutineRecord represents a single goroutine and the profiling information
