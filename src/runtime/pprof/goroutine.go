@@ -87,6 +87,9 @@ func (g *GoroutineProfiler) SetMaxGoroutines(n int) {
 	g.maxGoroutines = n
 }
 
+// runtime_registerGFilter is defined in runtime/proflabel.go.
+func runtime_registerGFilter(filter map[string]string)
+
 // SetLabelFilter TODO(fg) finish writing this
 // TODO(fg) figure out a way to register this with the runtime. Will probably
 // require a Close() method on the profiler.
@@ -95,6 +98,8 @@ func (g *GoroutineProfiler) SetLabelFilter(filter LabelSet) {
 	for _, label := range filter.list {
 		g.labelFilter[label.key] = label.value
 	}
+	// TODO(fg) mechanism for unregistering
+	runtime_registerGFilter(g.labelFilter)
 }
 
 // TODO(fg) implement

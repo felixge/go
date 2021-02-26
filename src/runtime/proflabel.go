@@ -38,3 +38,23 @@ func runtime_setProfLabel(labels unsafe.Pointer) {
 func runtime_getProfLabel() unsafe.Pointer {
 	return getg().labels
 }
+
+var (
+	gfilterlock mutex
+	gfilters    []*gfilter
+)
+
+type gfilter struct {
+	labels map[string]string
+	gs     []*g
+}
+
+//go:linkname runtime_registerGFilter runtime/pprof.runtime_registerGFilter
+func runtime_registerGFilter(filter map[string]string) {
+	lock(&gfilterlock)
+	println("register GFilter!")
+	gfilters = append(gfilters, &gfilter{
+		labels: filter,
+	})
+	unlock(&gfilterlock)
+}

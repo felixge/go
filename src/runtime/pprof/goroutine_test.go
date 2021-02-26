@@ -56,7 +56,7 @@ func TestGoroutineProfiler(t *testing.T) {
 	})
 
 	t.Run("SetLabelFilter", func(t *testing.T) {
-		cleanup := spawnGoroutines(3, "SetLabelFilter")
+		cleanup := spawnGoroutines(7, "SetLabelFilter")
 		defer cleanup()
 
 		g := NewGoroutineProfiler()
@@ -65,7 +65,7 @@ func TestGoroutineProfiler(t *testing.T) {
 		for _, g := range gs {
 			fmt.Printf("%v\n", g.Labels)
 		}
-		if got, want := len(gs), 3; got != want {
+		if got, want := len(gs), 7; got != want {
 			t.Fatalf("got=%d want=%d goroutines", got, want)
 		}
 	})
