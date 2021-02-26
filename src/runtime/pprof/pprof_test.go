@@ -15,6 +15,7 @@ import (
 	"internal/race"
 	"internal/testenv"
 	"io"
+	"math"
 	"math/big"
 	"os"
 	"os/exec"
@@ -902,6 +903,59 @@ func blockCond() {
 	}()
 	c.Wait()
 	mu.Unlock()
+}
+
+func TestBlockProfileBias(t *testing.T) {
+	rate := int(100 * time.Microsecond)
+	runtime.SetBlockProfileRate(rate)
+	defer runtime.SetBlockProfileRate(0)
+
+	blockFrequentShort(rate)
+	blockInfrequentLong(rate)
+
+	var w bytes.Buffer
+	Lookup("block").WriteTo(&w, 0)
+	p, err := profile.Parse(&w)
+	if err != nil {
+		t.Fatalf("failed to parse profile: %v", err)
+	}
+	t.Logf("parsed proto: %s", p)
+
+	m := map[string][]int64{}
+	for _, s := range p.Sample {
+		for _, l := range s.Location {
+			for _, line := range l.Line {
+				m[line.Function.Name] = s.Value
+			}
+		}
+	}
+	// If there is no bias, il and fs should be equal on average.
+	il := float64(m["runtime/pprof.blockInfrequentLong"][1])
+	fs := float64(m["runtime/pprof.blockFrequentShort"][1])
+	const threshold = 0.5
+	if e := math.Abs(il-fs) / il; e > threshold {
+		// TODO(fg) it would be nice to use Errorf() here, but this test relies on
+		// random numbers and scheduler timing, making it too flaky.
+		t.Logf("WARNING: bias: %f > %f", e, threshold)
+	} else {
+		t.Logf("bias: %f < %f", e, threshold)
+	}
+}
+
+// blockFrequentShort produces 1000 block events with an average duration of
+// rate / 10.
+func blockFrequentShort(rate int) {
+	for i := 0; i < 1000; i++ {
+		<-time.After(time.Duration(rate / 10))
+	}
+}
+
+// blockFrequentShort produces 100 block events with an average duration of
+// rate.
+func blockInfrequentLong(rate int) {
+	for i := 0; i < 100; i++ {
+		<-time.After(time.Duration(rate))
+	}
 }
 
 func TestMutexProfile(t *testing.T) {
