@@ -398,20 +398,23 @@ func blockevent(cycles int64, skip int) {
 	if cycles <= 0 {
 		cycles = 1
 	}
-	if blocksampled(cycles) {
-		saveblockevent(cycles, skip+1, blockProfile)
+
+	rate := int64(atomic.Load64(&blockprofilerate))
+	if blocksampled(cycles, rate) {
+		saveblockevent(cycles, rate, skip+1, blockProfile)
 	}
 }
 
-func blocksampled(cycles int64) bool {
-	rate := int64(atomic.Load64(&blockprofilerate))
+// blocksampled returns true for all events where cycles >= rate. Shorter
+// events have a cycles/rate random chance of returning true.
+func blocksampled(cycles, rate int64) bool {
 	if rate <= 0 || (rate > cycles && int64(fastrand())%rate > cycles) {
 		return false
 	}
 	return true
 }
 
-func saveblockevent(cycles int64, skip int, which bucketType) {
+func saveblockevent(cycles, rate int64, skip int, which bucketType) {
 	gp := getg()
 	var nstk int
 	var stk [maxStack]uintptr
@@ -422,8 +425,18 @@ func saveblockevent(cycles int64, skip int, which bucketType) {
 	}
 	lock(&proflock)
 	b := stkbucket(which, 0, stk[:nstk], true)
-	b.bp().count++
-	b.bp().cycles += cycles
+	if which == blockProfile && cycles < rate {
+		// blocksampled is biased towards long infrequent events, so we correct for
+		// this by making the short events appear longer and less frequent in the
+		// profile. See https://github.com/golang/go/issues/44192
+		if int64(fastrand())%rate < cycles {
+			b.bp().count += 1
+		}
+		b.bp().cycles += rate
+	} else {
+		b.bp().count++
+		b.bp().cycles += cycles
+	}
 	unlock(&proflock)
 }
 
@@ -454,7 +467,7 @@ func mutexevent(cycles int64, skip int) {
 	// TODO(pjw): measure impact of always calling fastrand vs using something
 	// like malloc.go:nextSample()
 	if rate > 0 && int64(fastrand())%rate == 0 {
-		saveblockevent(cycles, skip+1, mutexProfile)
+		saveblockevent(cycles, rate, skip+1, mutexProfile)
 	}
 }
 
