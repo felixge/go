@@ -133,7 +133,7 @@ func (a *memRecordCycle) add(b *memRecordCycle) {
 // A blockRecord is the bucket data for a bucket of type blockProfile,
 // which is used in blocking and mutex profiles.
 type blockRecord struct {
-	count  int64
+	count  float64
 	cycles int64
 }
 
@@ -426,12 +426,7 @@ func saveblockevent(cycles, rate int64, skip int, which bucketType) {
 	lock(&proflock)
 	b := stkbucket(which, 0, stk[:nstk], true)
 	if which == blockProfile && cycles < rate {
-		// blocksampled is biased towards long infrequent events, so we correct for
-		// this by making the short events appear longer and less frequent in the
-		// profile. See https://github.com/golang/go/issues/44192
-		if int64(fastrand())%rate < cycles {
-			b.bp().count += 1
-		}
+		b.bp().count += float64(rate) / float64(cycles)
 		b.bp().cycles += rate
 	} else {
 		b.bp().count++
@@ -654,7 +649,7 @@ func BlockProfile(p []BlockProfileRecord) (n int, ok bool) {
 		for b := bbuckets; b != nil; b = b.allnext {
 			bp := b.bp()
 			r := &p[0]
-			r.Count = bp.count
+			r.Count = int64(bp.count)
 			r.Cycles = bp.cycles
 			if raceenabled {
 				racewriterangepc(unsafe.Pointer(&r.Stack0[0]), unsafe.Sizeof(r.Stack0), getcallerpc(), funcPC(BlockProfile))
