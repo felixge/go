@@ -10,6 +10,7 @@ package pprof
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"internal/abi"
 	"internal/profile"
@@ -21,6 +22,7 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -247,6 +249,253 @@ func recursionChainBottom(x int, pcs []uintptr) {
 	dumpCallers(pcs)
 
 	recursionChainTop(x-1, pcs)
+}
+
+// TestCPUProfileBias launches the biastest program which burns CPU time using
+// a configurable number of Go or Cgo created threads running Go or Cgo code to
+// make sure the resulting CPU profiles are accurate and unbiased.
+func TestCPUProfileBias(t *testing.T) {
+	testenv.MustHaveGoRun(t)
+	testenv.MustHaveCGO(t)
+
+	// biastest is a separate program because go build fails if we try to import
+	// "C" inside of this test. We also need DWARF symbols, so we can't use go
+	// run.
+	goBuild := exec.Command(testenv.GoToolPath(t), "build")
+	goBuild.Dir = "./testdata/biastest"
+	if out, err := goBuild.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build the test program %q: %v\n%s", goBuild.Dir, err, out)
+	}
+
+	duration := 1 * time.Second
+	threads := 2
+	path := goBuild.Dir + "/biastest"
+
+	var tests []biastest
+	// TODO(fg) determine which of these tests are important and can be executed
+	// reliably on all machines.
+	for _, kind := range threadKinds {
+		for _, preSleep := range []time.Duration{0, 9 * time.Millisecond} {
+			for _, setCgoTraceback := range []bool{false, true} {
+				// Go created threads running C code without returning back to Go can't
+				// have their getg().m.profilehz adjusted, so they drop SIGPROF signals.
+				// Let's exclude them from them from the PreSleep test for now.
+				// TODO(fg) maybe change the code so it yields back to Go ocassionally?
+				if kind == threadGoCgo && preSleep > 0 {
+					continue
+					// see https://go-review.googlesource.com/c/go/+/334769/comments/d9225cac_a4d8b555
+				} else if kind == threadCgoGoCgo {
+					continue
+					// setCgoTraceback is only implemented for linux/amd64 in biastest right now
+				} else if setCgoTraceback && (runtime.GOOS != "linux" || runtime.GOARCH != "amd64") {
+					continue
+				}
+
+				tests = append(tests, biastest{
+					Path:              path,
+					Threads:           map[threadKind]int{kind: threads},
+					PreSleep:          preSleep,
+					ProfilingDuration: duration,
+					SetCgoTraceback:   setCgoTraceback,
+				})
+			}
+		}
+	}
+
+	for _, test := range tests {
+		t.Run(test.Name(), func(t *testing.T) {
+			results := test.Run(t)
+			t.Logf("results: %s", results)
+
+			// For now just do a basic sanity check on the results.
+			// TODO(fg) check against thresholds for various forms of error/bias.
+			for kind, count := range test.Threads {
+				if got := len(results.Threads[kind]); got != count {
+					t.Fatalf("got %d, but expected %d %s threads", got, count, kind)
+				}
+			}
+
+			rusageThreshold := 0.05 // arbitrarily chosen, might need tuning
+			rusageError := math.Abs(float64(results.ThreadSum())/float64(results.Rusage) - 1)
+			if rusageError > rusageThreshold {
+				t.Fatalf("profiler cpu time too different from rusage: %f > %f", rusageError, rusageThreshold)
+			}
+		})
+	}
+}
+
+var threadKinds = []threadKind{
+	threadGoGo,
+	threadGoCgo,
+	threadGoCgoGo,
+	threadCgoCgo,
+	threadCgoGo,
+	threadCgoGoCgo,
+	threadCgoGoReturnCgo,
+}
+
+type threadKind string
+
+// keep in sync with ./testdata/biastest/main.go
+const (
+	// threadGoGo is a Go-created thread running Go code.
+	threadGoGo threadKind = "goGo"
+	// threadGoCgo is a Go-created thread running Cgo code.
+	threadGoCgo threadKind = "goCgo"
+	// threadGoCgoGo is a Go-created thread that calls a Cgo function that calls
+	// Go code.
+	threadGoCgoGo threadKind = "goCgoGo"
+	// threadCgoGo is a Cgo-created thread running Go code.
+	threadCgoGo threadKind = "cgoGo"
+	// threadCgoCgo is a Cgo-created thread running Cgo code.
+	threadCgoCgo threadKind = "cgoCgo"
+	// threadCgoGoCgo is a Cgo-created thread that calls a Go function that calls
+	// Cgo code.
+	threadCgoGoCgo threadKind = "cgoGoCgo"
+	// threadCgoGoReturnCgo is a Cgo-created thread that calls a Go function that
+	// immediately returns and then calls Cgo code from Cgo.
+	threadCgoGoReturnCgo threadKind = "cgoGoReturnCgo"
+	// threadUnknown is a unknown thread we collected samples for.
+	threadUnknown threadKind = "unknown"
+)
+
+// Matches returns if the given line's function name matches the expected
+// function name of the given k's threadID.
+func (k threadKind) Matches(line profile.Line, threadID int) bool {
+	want := fmt.Sprintf("%s%dThread", k, threadID)
+	return strings.Contains(line.Function.Name, want)
+}
+
+type biastest struct {
+	// Path to the biastest program.
+	Path string
+	// Threads determines how many threads of each type are executed by the test
+	// for the given Duration.
+	Threads map[threadKind]int
+	// PreSleep starts the thread above, sleeps for the given duration, and then
+	// starts the profiling. If 0, profiling is started before any of the
+	// threads.
+	PreSleep time.Duration
+	// ProfilingDuration is the profiling duration. The total test duration is
+	// PreSleep + ProfilingDuration.
+	ProfilingDuration time.Duration
+	// SetCgoTraceback enables a minimalistic runtime.SetCgoTraceback()
+	// implementation that determines the current pc if it's inside of a C
+	// function.
+	SetCgoTraceback bool
+}
+
+func (b biastest) Name() string {
+	var pairs []string
+	for kind, count := range b.Threads {
+		pairs = append(pairs, fmt.Sprintf("%s=%d", kind, count))
+	}
+	pairs = append(pairs, "presleep="+b.PreSleep.String())
+	pairs = append(pairs, "duration="+b.ProfilingDuration.String())
+	pairs = append(pairs, fmt.Sprintf("setcgotraceback=%t", b.SetCgoTraceback))
+	return strings.Join(pairs, " ")
+}
+
+// Run runs the test and returns how much time was spend in each threadKind
+// per threadID according to the pprof profile.
+func (b biastest) Run(t *testing.T) biastestResult {
+	biastest := exec.Command(b.Path)
+	for kind, count := range b.Threads {
+		biastest.Args = append(biastest.Args, fmt.Sprintf("-%s=%d", kind, count))
+	}
+	biastest.Args = append(biastest.Args, "-presleep="+b.PreSleep.String())
+	biastest.Args = append(biastest.Args, "-duration="+b.ProfilingDuration.String())
+	biastest.Stderr = new(bytes.Buffer)
+	if b.SetCgoTraceback {
+		biastest.Env = append(biastest.Env, "SETCGOTRACEBACK=1")
+	}
+	out, err := biastest.Output()
+	if err != nil {
+		t.Fatalf("failed to run the test program %q: %v\n%v", biastest.Path, err, biastest.Stderr)
+	}
+
+	// jsonOutput should be kept in sync with src/runtime/pprof/testdata/biastest/main.go
+	var jsonOutput struct {
+		RUsage  time.Duration
+		Profile []byte
+	}
+	if err := json.Unmarshal(out, &jsonOutput); err != nil {
+		t.Fatalf("bad json from biastest: %s: %s", err, out)
+	}
+
+	prof, err := profile.Parse(bytes.NewReader(jsonOutput.Profile))
+	if err != nil {
+		t.Fatalf("failed to parse the generated profile data: %v", err)
+	}
+	if err := symbolizeProfile(b.Path, prof); err != nil {
+		t.Fatal(err)
+	}
+	//t.Logf("profile: %s", prof)
+
+	var results = biastestResult{
+		Rusage:  jsonOutput.RUsage,
+		Threads: make(map[threadKind][]time.Duration),
+	}
+outer:
+	for _, s := range prof.Sample {
+		for _, loc := range s.Location {
+			for _, line := range loc.Line {
+				for kind, count := range b.Threads {
+					for threadID := 0; threadID < count; threadID++ {
+						if kind.Matches(line, threadID) {
+							if len(results.Threads[kind]) < threadID+1 {
+								s := make([]time.Duration, threadID+1)
+								copy(s, results.Threads[kind])
+								results.Threads[kind] = s
+							}
+
+							results.Threads[kind][threadID] += time.Duration(s.Value[1])
+							continue outer
+						}
+					}
+				}
+			}
+		}
+		if _, ok := results.Threads[threadUnknown]; !ok {
+			results.Threads[threadUnknown] = []time.Duration{0}
+		}
+		results.Threads[threadUnknown][0] += time.Duration(s.Value[1])
+	}
+
+	return results
+}
+
+// biastestResult holds the results of a biastest.
+type biastestResult struct {
+	Rusage  time.Duration
+	Threads map[threadKind][]time.Duration
+}
+
+// String returns a human-friendly string describing the result data.
+func (r biastestResult) String() string {
+	var ks []string
+	for kind, durations := range r.Threads {
+		var ds []string
+		for _, duration := range durations {
+			ds = append(ds, duration.String())
+		}
+		ks = append(ks, fmt.Sprintf("%s=[%s]", kind, strings.Join(ds, ", ")))
+	}
+	sort.Strings(ks)
+	ks = append([]string{fmt.Sprintf("rusage=%s", r.Rusage)}, ks...)
+	return strings.Join(ks, " ")
+}
+
+// ThreadSum returns the total amount of time the profiler sampled for all
+// threads.
+func (r biastestResult) ThreadSum() time.Duration {
+	var d time.Duration
+	for _, durations := range r.Threads {
+		for _, duration := range durations {
+			d += duration
+		}
+	}
+	return d
 }
 
 func parseProfile(t *testing.T, valBytes []byte, f func(uintptr, []*profile.Location, map[string][]string)) *profile.Profile {
