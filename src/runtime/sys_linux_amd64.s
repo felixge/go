@@ -224,6 +224,13 @@ TEXT runtime·timer_delete(SB),NOSPLIT,$0-12
 	MOVL	AX, ret+8(FP)
 	RET
 
+TEXT runtime·clock_gettime(SB),NOSPLIT,$0-28
+	MOVL	clk_id+0(FP), DI
+	MOVQ	tp+8(FP), SI
+	MOVL	$SYS_clock_gettime, AX
+	SYSCALL
+	RET
+
 TEXT runtime·mincore(SB),NOSPLIT,$0-28
 	MOVQ	addr+0(FP), DI
 	MOVQ	n+8(FP), SI

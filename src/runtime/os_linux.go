@@ -416,6 +416,9 @@ func timer_settime(timerid int32, flags int32, new, old *itimerspec) int32
 func timer_delete(timerid int32) int32
 
 //go:noescape
+func clock_gettime(clk_id int32, tp *timespec)
+
+//go:noescape
 func rtsigprocmask(how int32, new, old *sigset, size int32)
 
 //go:nosplit
