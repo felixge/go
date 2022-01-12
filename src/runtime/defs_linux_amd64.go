@@ -79,6 +79,8 @@ const (
 	_ITIMER_VIRTUAL = 0x1
 	_ITIMER_PROF    = 0x2
 
+	_CLOCK_THREAD_CPUTIME_ID = 0x3
+
 	_EPOLLIN       = 0x1
 	_EPOLLOUT      = 0x4
 	_EPOLLERR      = 0x8
