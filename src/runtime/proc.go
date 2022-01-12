@@ -4631,6 +4631,11 @@ func sigprof(pc, sp, lr uintptr, gp *g, mp *m) {
 		return
 	}
 
+	var ts timespec
+	clock_gettime(_CLOCK_THREAD_CPUTIME_ID, &ts)
+	ms := ts.tv_sec*1e3 + ts.tv_nsec/1e6
+	println("sigprof", gettid(), ms)
+
 	// If mp.profilehz is 0, then profiling is not enabled for this thread.
 	// We must check this to avoid a deadlock between setcpuprofilerate
 	// and the call to cpuprof.add, below.
