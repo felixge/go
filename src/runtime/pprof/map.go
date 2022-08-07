@@ -18,11 +18,12 @@ type profMap struct {
 
 // A profMapEntry is a single entry in the profMap.
 type profMapEntry struct {
-	nextHash *profMapEntry // next in hash list
-	nextAll  *profMapEntry // next in list of all entries
-	stk      []uintptr
-	tag      unsafe.Pointer
-	count    int64
+	nextHash   *profMapEntry // next in hash list
+	nextAll    *profMapEntry // next in list of all entries
+	stk        []uintptr
+	tag        unsafe.Pointer
+	count      int64
+	timestamps []int64
 }
 
 func (m *profMap) lookup(stk []uint64, tag unsafe.Pointer) *profMapEntry {

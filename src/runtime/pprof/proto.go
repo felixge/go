@@ -22,10 +22,13 @@ import (
 // (The name shows up in the pprof graphs.)
 func lostProfileEvent() { lostProfileEvent() }
 
+var pprofBreakdownEnabled = os.Getenv("PPROF_BREAKDOWN") == "true"
+
 // A profileBuilder writes a profile incrementally from a
 // stream of profile samples delivered by the runtime.
 type profileBuilder struct {
 	start      time.Time
+	startNanos int64
 	end        time.Time
 	havePeriod bool
 	period     int64
@@ -89,9 +92,10 @@ const (
 	tagValueType_Unit = 2 // int64 (string table index)
 
 	// message Sample
-	tagSample_Location = 1 // repeated uint64
-	tagSample_Value    = 2 // repeated int64
-	tagSample_Label    = 3 // repeated Label
+	tagSample_Location    = 1 // repeated uint64
+	tagSample_Value       = 2 // repeated int64
+	tagSample_Label       = 3 // repeated Label
+	tagSample_OffsetNanos = 4 // repeated int64
 
 	// message Label
 	tagLabel_Key = 1 // int64 (string table index)
@@ -288,6 +292,7 @@ func (b *profileBuilder) addCPUData(data []uint64, tags []unsafe.Pointer) error 
 		// period in nanoseconds.
 		b.period = 1e9 / int64(data[2])
 		b.havePeriod = true
+		b.startNanos = int64(data[1])
 		data = data[3:]
 		// Consume tag slot. Note that there isn't a meaningful tag
 		// value for this record.
@@ -319,6 +324,8 @@ func (b *profileBuilder) addCPUData(data []uint64, tags []unsafe.Pointer) error 
 		if len(tags) < 1 {
 			return fmt.Errorf("mismatched profile records and tags")
 		}
+
+		timestamp := int64(data[1]) - b.startNanos
 		count := data[2]
 		stk := data[3:data[0]]
 		data = data[data[0]:]
@@ -335,7 +342,11 @@ func (b *profileBuilder) addCPUData(data []uint64, tags []unsafe.Pointer) error 
 				uint64(abi.FuncPCABIInternal(lostProfileEvent) + 1),
 			}
 		}
-		b.m.lookup(stk, tag).count += int64(count)
+		e := b.m.lookup(stk, tag)
+		if pprofBreakdownEnabled {
+			e.timestamps = append(e.timestamps, timestamp)
+		}
+		e.count += int64(count)
 	}
 
 	if len(tags) != 0 {
@@ -369,6 +380,16 @@ func (b *profileBuilder) build() {
 			labels = func() {
 				for k, v := range *(*labelMap)(e.tag) {
 					b.pbLabel(tagSample_Label, k, v, 0)
+				}
+			}
+		}
+
+		if len(e.timestamps) > 0 {
+			labelsOld := labels
+			labels = func() {
+				b.pb.int64s(tagSample_OffsetNanos, e.timestamps)
+				if labelsOld != nil {
+					labelsOld()
 				}
 			}
 		}

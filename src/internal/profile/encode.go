@@ -338,6 +338,8 @@ var sampleDecoder = []decoder{
 		s.labelX = append(s.labelX, Label{})
 		return decodeMessage(b, &s.labelX[n])
 	},
+	// repeated int64 offset_nanos = 4
+	func(b *buffer, m message) error { return decodeInt64s(b, &m.(*Sample).OffsetNanos) },
 }
 
 func (p Label) decoder() []decoder {
