@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"internal/abi"
 	"io"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -28,7 +29,7 @@ var pprofBreakdownEnabled = os.Getenv("PPROF_BREAKDOWN") == "true"
 // stream of profile samples delivered by the runtime.
 type profileBuilder struct {
 	start      time.Time
-	startNanos int64
+	startTicks int64
 	end        time.Time
 	havePeriod bool
 	period     int64
@@ -42,6 +43,7 @@ type profileBuilder struct {
 	stringMap map[string]int
 	locs      map[uintptr]locInfo // list of locInfo starting with the given PC.
 	funcs     map[string]int      // Package path-qualified function name to Function.ID
+	labelSets map[string]uint64
 	mem       []memMap
 	deck      pcDeck
 }
@@ -86,21 +88,32 @@ const (
 	tagProfile_Period            = 12 // int64
 	tagProfile_Comment           = 13 // repeated int64
 	tagProfile_DefaultSampleType = 14 // int64
+	tagProfile_TickUnit          = 15 // int64
+	tagProfile_LabelSet          = 16 // repeated LabelSet
 
 	// message ValueType
 	tagValueType_Type = 1 // int64 (string table index)
 	tagValueType_Unit = 2 // int64 (string table index)
 
 	// message Sample
-	tagSample_Location    = 1 // repeated uint64
-	tagSample_Value       = 2 // repeated int64
-	tagSample_Label       = 3 // repeated Label
-	tagSample_OffsetNanos = 4 // repeated int64
+	tagSample_Location  = 1 // repeated uint64
+	tagSample_Value     = 2 // repeated int64
+	tagSample_Label     = 3 // repeated Label
+	tagSample_Breakdown = 4 // repeated Breakdown
+
+	// message Breakdown
+	tagBreakdown_Ticks      = 1 // repeated int64
+	tagBreakdown_Value      = 2 // repeated int64
+	tagBreakdown_LabelSetID = 3 // repeated uint64
 
 	// message Label
 	tagLabel_Key = 1 // int64 (string table index)
 	tagLabel_Str = 2 // int64 (string table index)
 	tagLabel_Num = 3 // int64
+
+	// message LabelSet
+	tagLabelSet_ID    = 1 // uint64
+	tagLabelSet_Label = 2 // repeated Label
 
 	// message Mapping
 	tagMapping_ID              = 1  // uint64
@@ -179,6 +192,43 @@ func (b *profileBuilder) pbLabel(tag int, key, str string, num int64) {
 	b.pb.int64Opt(tagLabel_Str, b.stringIndex(str))
 	b.pb.int64Opt(tagLabel_Num, num)
 	b.pb.endMessage(tag, start)
+}
+
+// pbBreakdown encodes a Breakdown message to b.pb.
+func (b *profileBuilder) pbBreakdown(ticks []int64, labelSetIDs []uint64) {
+	start := b.pb.startMessage()
+	b.pb.int64s(tagBreakdown_Ticks, ticks)
+	b.pb.uint64s(tagBreakdown_LabelSetID, labelSetIDs)
+	b.pb.endMessage(tagSample_Breakdown, start)
+}
+
+// labelSetIndex returns the index for the given tag. If it doesn't exist yet
+// it adds it to the LabelSet table. This means this method must not be called
+// in the middle of a message.
+func (b *profileBuilder) labelSetIndex(tag labelMap) uint64 {
+	var key string
+	for k, v := range tag {
+		key += k + v
+	}
+	idx, ok := b.labelSets[key]
+	if ok {
+		return idx
+	}
+
+	idx = uint64(len(b.labelSets)) + 1
+	b.pbLabelSet(tag, idx)
+	b.labelSets[key] = idx
+	return idx
+}
+
+// pbLabelSet encodes a LabelSet message to b.pb.
+func (b *profileBuilder) pbLabelSet(tag labelMap, idx uint64) {
+	start := b.pb.startMessage()
+	b.pb.uint64(tagLabelSet_ID, idx)
+	for k, v := range tag {
+		b.pbLabel(tagSample_Label, k, v, 0)
+	}
+	b.pb.endMessage(tagProfile_LabelSet, start)
 }
 
 // pbLine encodes a Line message to b.pb.
@@ -270,6 +320,7 @@ func newProfileBuilder(w io.Writer) *profileBuilder {
 		stringMap: map[string]int{"": 0},
 		locs:      map[uintptr]locInfo{},
 		funcs:     map[string]int{},
+		labelSets: map[string]uint64{},
 	}
 	b.readMapping()
 	return b
@@ -292,7 +343,7 @@ func (b *profileBuilder) addCPUData(data []uint64, tags []unsafe.Pointer) error 
 		// period in nanoseconds.
 		b.period = 1e9 / int64(data[2])
 		b.havePeriod = true
-		b.startNanos = int64(data[1])
+		b.startTicks = int64(data[1])
 		data = data[3:]
 		// Consume tag slot. Note that there isn't a meaningful tag
 		// value for this record.
@@ -325,7 +376,7 @@ func (b *profileBuilder) addCPUData(data []uint64, tags []unsafe.Pointer) error 
 			return fmt.Errorf("mismatched profile records and tags")
 		}
 
-		timestamp := int64(data[1]) - b.startNanos
+		tickNanos := int64(data[1]) - b.startTicks
 		count := data[2]
 		stk := data[3:data[0]]
 		data = data[data[0]:]
@@ -342,9 +393,13 @@ func (b *profileBuilder) addCPUData(data []uint64, tags []unsafe.Pointer) error 
 				uint64(abi.FuncPCABIInternal(lostProfileEvent) + 1),
 			}
 		}
-		e := b.m.lookup(stk, tag)
-		if pprofBreakdownEnabled {
-			e.timestamps = append(e.timestamps, timestamp)
+		var e *profMapEntry
+		if !pprofBreakdownEnabled {
+			e = b.m.lookup(stk, tag)
+		} else {
+			e = b.m.lookup(stk, nil)
+			e.ticks = append(e.ticks, tickNanos)
+			e.tags = append(e.tags, tag)
 		}
 		e.count += int64(count)
 	}
@@ -361,19 +416,31 @@ func (b *profileBuilder) build() {
 
 	b.pb.int64Opt(tagProfile_TimeNanos, b.start.UnixNano())
 	if b.havePeriod { // must be CPU profile
-		b.pbValueType(tagProfile_SampleType, "samples", "count")
+		if !pprofBreakdownEnabled {
+			b.pbValueType(tagProfile_SampleType, "samples", "count")
+		}
 		b.pbValueType(tagProfile_SampleType, "cpu", "nanoseconds")
 		b.pb.int64Opt(tagProfile_DurationNanos, b.end.Sub(b.start).Nanoseconds())
 		b.pbValueType(tagProfile_PeriodType, "cpu", "nanoseconds")
 		b.pb.int64Opt(tagProfile_Period, b.period)
+		b.pb.int64Opt(tagProfile_TickUnit, b.stringIndex("nanoseconds"))
 	}
 
-	values := []int64{0, 0}
+	var values []int64
+	if !pprofBreakdownEnabled {
+		values = []int64{0, 0}
+	} else {
+		values = []int64{0}
+	}
 	var locs []uint64
 
 	for e := b.m.all; e != nil; e = e.nextAll {
-		values[0] = e.count
-		values[1] = e.count * b.period
+		if !pprofBreakdownEnabled {
+			values[0] = e.count
+			values[1] = e.count * b.period
+		} else {
+			values[0] = e.count * b.period
+		}
 
 		var labels func()
 		if e.tag != nil {
@@ -382,16 +449,16 @@ func (b *profileBuilder) build() {
 					b.pbLabel(tagSample_Label, k, v, 0)
 				}
 			}
-		}
-
-		if len(e.timestamps) > 0 {
-			labelsOld := labels
-			labels = func() {
-				b.pb.int64s(tagSample_OffsetNanos, e.timestamps)
-				if labelsOld != nil {
-					labelsOld()
+		} else if pprofBreakdownEnabled && (len(e.ticks) > 0 || len(e.tags) > 0) {
+			// TODO(fg) this is probably not efficient enough
+			labelSetIDs := make([]uint64, len(e.tags))
+			for i, tag := range e.tags {
+				if tag != nil {
+					labelSetIDs[i] = b.labelSetIndex(*(*labelMap)(tag))
 				}
 			}
+
+			labels = func() { b.pbBreakdown(e.ticks, labelSetIDs) }
 		}
 
 		locs = b.appendLocsForStack(locs[:0], e.stk)
