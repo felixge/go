@@ -96,26 +96,6 @@ func TestCPUProfile(t *testing.T) {
 	})
 }
 
-func TestCPUProfileOffsetNanos(t *testing.T) {
-	matches := matchAndAvoidStacks(stackContains, []string{"runtime/pprof.cpuHog1"}, avoidFunctions())
-	start := time.Now()
-	p := testCPUProfile(t, matches, func(dur time.Duration) {
-		cpuHogger(cpuHog1, &salt1, dur)
-	})
-	maxOffset := time.Since(start)
-	for sampleIdx, s := range p.Sample {
-		if int64(len(s.OffsetNanos)) != s.Value[0] {
-			t.Errorf("got=%d want=%d sample_idx=%d", len(s.OffsetNanos), s.Value[0], sampleIdx)
-		}
-		for offsetIdx, offsetNanos := range s.OffsetNanos {
-			offset := time.Duration(offsetNanos)
-			if offset < 0 || offset > maxOffset {
-				t.Errorf("got=%s want=0...%s sample_idx=%d offset_nanos_idx=%d", offset, maxOffset, sampleIdx, offsetIdx)
-			}
-		}
-	}
-}
-
 func TestCPUProfileMultithreaded(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(2))
 	matches := matchAndAvoidStacks(stackContains, []string{"runtime/pprof.cpuHog1", "runtime/pprof.cpuHog2"}, avoidFunctions())
