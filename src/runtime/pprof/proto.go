@@ -226,7 +226,7 @@ func (b *profileBuilder) pbLabelSet(tag labelMap, idx uint64) {
 	start := b.pb.startMessage()
 	b.pb.uint64(tagLabelSet_ID, idx)
 	for k, v := range tag {
-		b.pbLabel(tagSample_Label, k, v, 0)
+		b.pbLabel(tagLabelSet_Label, k, v, 0)
 	}
 	b.pb.endMessage(tagProfile_LabelSet, start)
 }
