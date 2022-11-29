@@ -12,18 +12,18 @@ import (
 
 func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	itr := tracebackIterator{
-		pc0:   pc0,
-		sp0:   sp0,
-		lr0:   lr0,
-		gp:    gp,
-		skip:  skip,
-		pcbuf: pcbuf,
-		max:   max,
-		// callback: callback,
+		pc0:      pc0,
+		sp0:      sp0,
+		lr0:      lr0,
+		gp:       gp,
+		skip:     skip,
+		pcbuf:    pcbuf,
+		max:      max,
+		callback: callback,
 		// v:        v,
 		// flags:    flags,
 	}
-	return itr.Gentraceback(callback, v, flags)
+	return itr.Gentraceback(v, flags)
 }
 
 type tracebackIterator struct {
@@ -37,8 +37,8 @@ type tracebackIterator struct {
 	flags         uint
 }
 
-func (itr *tracebackIterator) Gentraceback(callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
-	if itr.skip > 0 && callback != nil {
+func (itr *tracebackIterator) Gentraceback(v unsafe.Pointer, flags uint) int {
+	if itr.skip > 0 && itr.callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
 
@@ -87,7 +87,7 @@ func (itr *tracebackIterator) Gentraceback(callback func(*stkframe, unsafe.Point
 	waspanic := false
 	cgoCtxt := itr.gp.cgoCtxt
 	stack := itr.gp.stack
-	printing := itr.pcbuf == nil && callback == nil
+	printing := itr.pcbuf == nil && itr.callback == nil
 
 	// If the PC is zero, it's likely a nil function call.
 	// Start in the caller's frame.
@@ -117,11 +117,11 @@ func (itr *tracebackIterator) Gentraceback(callback func(*stkframe, unsafe.Point
 
 	f := findfunc(frame.pc)
 	if !f.valid() {
-		if callback != nil || printing {
+		if itr.callback != nil || printing {
 			print("runtime: g ", itr.gp.goid, ": unknown pc ", hex(frame.pc), "\n")
 			tracebackHexdump(stack, &frame, 0)
 		}
-		if callback != nil {
+		if itr.callback != nil {
 			throw("unknown pc")
 		}
 		return 0
@@ -219,7 +219,7 @@ func (itr *tracebackIterator) Gentraceback(callback func(*stkframe, unsafe.Point
 			// This function marks the top of the stack. Stop the traceback.
 			frame.lr = 0
 			flr = funcInfo{}
-		} else if flag&funcFlag_SPWRITE != 0 && (callback == nil || n > 0) {
+		} else if flag&funcFlag_SPWRITE != 0 && (itr.callback == nil || n > 0) {
 			// The function we are in does a write to SP that we don't know
 			// how to encode in the spdelta table. Examples include context
 			// switch routines like runtime.gogo but also any code that switches
@@ -237,7 +237,7 @@ func (itr *tracebackIterator) Gentraceback(callback func(*stkframe, unsafe.Point
 			// So for GC stack traversal we leave things alone (this if body does not execute for n == 0)
 			// at the bottom frame of the stack. But farther up the stack we'd better not
 			// find any.
-			if callback != nil {
+			if itr.callback != nil {
 				println("traceback: unexpected SPWRITE function", funcname(f))
 				throw("traceback")
 			}
@@ -270,11 +270,11 @@ func (itr *tracebackIterator) Gentraceback(callback func(*stkframe, unsafe.Point
 					// return PC. Don't complain.
 					doPrint = false
 				}
-				if callback != nil || doPrint {
+				if itr.callback != nil || doPrint {
 					print("runtime: g ", itr.gp.goid, ": unexpected return pc for ", funcname(f), " called from ", hex(frame.lr), "\n")
 					tracebackHexdump(stack, &frame, lrPtr)
 				}
-				if callback != nil {
+				if itr.callback != nil {
 					throw("unknown caller pc")
 				}
 			}
@@ -336,8 +336,8 @@ func (itr *tracebackIterator) Gentraceback(callback func(*stkframe, unsafe.Point
 			}
 		}
 
-		if callback != nil {
-			if !callback((*stkframe)(noescape(unsafe.Pointer(&frame))), v) {
+		if itr.callback != nil {
+			if !itr.callback((*stkframe)(noescape(unsafe.Pointer(&frame))), v) {
 				return n
 			}
 		}
@@ -475,7 +475,7 @@ func (itr *tracebackIterator) Gentraceback(callback func(*stkframe, unsafe.Point
 			// skip only applies to Go frames.
 			// callback != nil only used when we only care
 			// about Go frames.
-			if itr.skip == 0 && callback == nil {
+			if itr.skip == 0 && itr.callback == nil {
 				n = tracebackCgoContext(itr.pcbuf, printing, ctxt, n, itr.max)
 			}
 		}
@@ -561,7 +561,7 @@ func (itr *tracebackIterator) Gentraceback(callback func(*stkframe, unsafe.Point
 	// At other times, such as when gathering a stack for a profiling signal
 	// or when printing a traceback during a crash, everything may not be
 	// stopped nicely, and the stack walk may not be able to complete.
-	if callback != nil && n < itr.max && frame.sp != itr.gp.stktopsp {
+	if itr.callback != nil && n < itr.max && frame.sp != itr.gp.stktopsp {
 		print("runtime: g", itr.gp.goid, ": frame.sp=", hex(frame.sp), " top=", hex(itr.gp.stktopsp), "\n")
 		print("\tstack=[", hex(itr.gp.stack.lo), "-", hex(itr.gp.stack.hi), "] n=", n, " max=", itr.max, "\n")
 		throw("traceback did not unwind completely")
