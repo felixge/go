@@ -19,7 +19,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		skip:     skip,
 		pcbuf:    pcbuf,
 		max:      max,
-		callback: callback,
+		callback: *(*func(*stkframe, unsafe.Pointer) bool)(noescape(unsafe.Pointer(&callback))),
 		v:        v,
 		flags:    flags,
 	}
@@ -39,6 +39,7 @@ type tracebackIterator struct {
 
 	level  int32
 	nprint int
+	frame  stkframe
 }
 
 func (itr *tracebackIterator) init() {
@@ -81,15 +82,17 @@ func (itr *tracebackIterator) init() {
 		}
 	}
 	itr.nprint = 0
+
+	itr.frame.pc = itr.pc0
+	itr.frame.sp = itr.sp0
+	if usesLR {
+		itr.frame.lr = itr.lr0
+	}
 }
 
 func (itr *tracebackIterator) Gentraceback() int {
-	var frame stkframe
-	frame.pc = itr.pc0
-	frame.sp = itr.sp0
-	if usesLR {
-		frame.lr = itr.lr0
-	}
+	frame := itr.frame
+
 	waspanic := false
 	cgoCtxt := itr.gp.cgoCtxt
 	stack := itr.gp.stack
