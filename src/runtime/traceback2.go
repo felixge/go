@@ -21,9 +21,9 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		max:      max,
 		callback: callback,
 		v:        v,
-		// flags:    flags,
+		flags:    flags,
 	}
-	return itr.Gentraceback(flags)
+	return itr.Gentraceback()
 }
 
 type tracebackIterator struct {
@@ -37,7 +37,7 @@ type tracebackIterator struct {
 	flags         uint
 }
 
-func (itr *tracebackIterator) Gentraceback(flags uint) int {
+func (itr *tracebackIterator) Gentraceback() int {
 	if itr.skip > 0 && itr.callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
@@ -170,7 +170,7 @@ func (itr *tracebackIterator) Gentraceback(flags uint) int {
 			// We also defensively check that this won't switch M's on us,
 			// which could happen at critical points in the scheduler.
 			// This ensures gp.m doesn't change from a stack jump.
-			if flags&_TraceJumpStack != 0 && itr.gp == itr.gp.m.g0 && itr.gp.m.curg != nil && itr.gp.m.curg.m == itr.gp.m {
+			if itr.flags&_TraceJumpStack != 0 && itr.gp == itr.gp.m.g0 && itr.gp.m.curg != nil && itr.gp.m.curg.m == itr.gp.m {
 				switch f.funcID {
 				case funcID_morestack:
 					// morestack does not return normally -- newstack()
@@ -357,7 +357,7 @@ func (itr *tracebackIterator) Gentraceback(flags uint) int {
 			// See issue 34123.
 			// The pc can be at function entry when the frame is initialized without
 			// actually running code, like runtime.mstart.
-			if (n == 0 && flags&_TraceTrap != 0) || waspanic || pc == f.entry() {
+			if (n == 0 && itr.flags&_TraceTrap != 0) || waspanic || pc == f.entry() {
 				pc++
 			} else {
 				tracepc--
@@ -408,7 +408,7 @@ func (itr *tracebackIterator) Gentraceback(flags uint) int {
 
 			// backup to CALL instruction to read inlining info (same logic as below)
 			tracepc := frame.pc
-			if (n > 0 || flags&_TraceTrap == 0) && frame.pc > f.entry() && !waspanic {
+			if (n > 0 || itr.flags&_TraceTrap == 0) && frame.pc > f.entry() && !waspanic {
 				tracepc--
 			}
 			// If there is inlining info, print the inner frames.
@@ -428,7 +428,7 @@ func (itr *tracebackIterator) Gentraceback(flags uint) int {
 					inlFunc.funcID = inltree[ix].funcID
 					inlFunc.startLine = inltree[ix].startLine
 
-					if (flags&_TraceRuntimeFrames) != 0 || showframe(inlFuncInfo, itr.gp, nprint == 0, inlFuncInfo.funcID, lastFuncID) {
+					if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(inlFuncInfo, itr.gp, nprint == 0, inlFuncInfo.funcID, lastFuncID) {
 						name := funcname(inlFuncInfo)
 						file, line := funcline(f, tracepc)
 						print(name, "(...)\n")
@@ -440,7 +440,7 @@ func (itr *tracebackIterator) Gentraceback(flags uint) int {
 					tracepc = frame.fn.entry() + uintptr(inltree[ix].parentPc)
 				}
 			}
-			if (flags&_TraceRuntimeFrames) != 0 || showframe(f, itr.gp, nprint == 0, f.funcID, lastFuncID) {
+			if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(f, itr.gp, nprint == 0, f.funcID, lastFuncID) {
 				// Print during crash.
 				//	main(0x1, 0x2, 0x3)
 				//		/home/rsc/go/src/runtime/x.go:23 +0xf
