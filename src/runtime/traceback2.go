@@ -15,7 +15,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		pc0: pc0,
 		sp0: sp0,
 		lr0: lr0,
-		// gp:       gp,
+		gp:  gp,
 		// skip:     skip,
 		// pcbuf:    pcbuf,
 		// max:      max,
@@ -23,7 +23,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		// v:        v,
 		// flags:    flags,
 	}
-	return itr.Gentraceback(gp, skip, pcbuf, max, callback, v, flags)
+	return itr.Gentraceback(skip, pcbuf, max, callback, v, flags)
 }
 
 type tracebackIterator struct {
@@ -37,13 +37,13 @@ type tracebackIterator struct {
 	flags         uint
 }
 
-func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
+func (itr *tracebackIterator) Gentraceback(skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	if skip > 0 && callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
 
 	// Don't call this "g"; it's too easy get "g" and "gp" confused.
-	if ourg := getg(); ourg == gp && ourg == ourg.m.curg {
+	if ourg := getg(); ourg == itr.gp && ourg == ourg.m.curg {
 		// The starting sp has been passed in as a uintptr, and the caller may
 		// have other uintptr-typed stack references as well.
 		// If during one of the calls that got us here or during one of the
@@ -62,17 +62,17 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 	level, _, _ := gotraceback()
 
 	if itr.pc0 == ^uintptr(0) && itr.sp0 == ^uintptr(0) { // Signal to fetch saved values from gp.
-		if gp.syscallsp != 0 {
-			itr.pc0 = gp.syscallpc
-			itr.sp0 = gp.syscallsp
+		if itr.gp.syscallsp != 0 {
+			itr.pc0 = itr.gp.syscallpc
+			itr.sp0 = itr.gp.syscallsp
 			if usesLR {
 				itr.lr0 = 0
 			}
 		} else {
-			itr.pc0 = gp.sched.pc
-			itr.sp0 = gp.sched.sp
+			itr.pc0 = itr.gp.sched.pc
+			itr.sp0 = itr.gp.sched.sp
 			if usesLR {
-				itr.lr0 = gp.sched.lr
+				itr.lr0 = itr.gp.sched.lr
 			}
 		}
 	}
@@ -85,8 +85,8 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 		frame.lr = itr.lr0
 	}
 	waspanic := false
-	cgoCtxt := gp.cgoCtxt
-	stack := gp.stack
+	cgoCtxt := itr.gp.cgoCtxt
+	stack := itr.gp.stack
 	printing := pcbuf == nil && callback == nil
 
 	// If the PC is zero, it's likely a nil function call.
@@ -118,7 +118,7 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 	f := findfunc(frame.pc)
 	if !f.valid() {
 		if callback != nil || printing {
-			print("runtime: g ", gp.goid, ": unknown pc ", hex(frame.pc), "\n")
+			print("runtime: g ", itr.gp.goid, ": unknown pc ", hex(frame.pc), "\n")
 			tracebackHexdump(stack, &frame, 0)
 		}
 		if callback != nil {
@@ -155,7 +155,7 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 			// So we don't need to exclude it with the other SP-writing functions.
 			flag &^= funcFlag_SPWRITE
 		}
-		if frame.pc == itr.pc0 && frame.sp == itr.sp0 && itr.pc0 == gp.syscallpc && itr.sp0 == gp.syscallsp {
+		if frame.pc == itr.pc0 && frame.sp == itr.sp0 && itr.pc0 == itr.gp.syscallpc && itr.sp0 == itr.gp.syscallsp {
 			// Some Syscall functions write to SP, but they do so only after
 			// saving the entry PC/SP using entersyscall.
 			// Since we are using the entry PC/SP, the later SP write doesn't matter.
@@ -170,7 +170,7 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 			// We also defensively check that this won't switch M's on us,
 			// which could happen at critical points in the scheduler.
 			// This ensures gp.m doesn't change from a stack jump.
-			if flags&_TraceJumpStack != 0 && gp == gp.m.g0 && gp.m.curg != nil && gp.m.curg.m == gp.m {
+			if flags&_TraceJumpStack != 0 && itr.gp == itr.gp.m.g0 && itr.gp.m.curg != nil && itr.gp.m.curg.m == itr.gp.m {
 				switch f.funcID {
 				case funcID_morestack:
 					// morestack does not return normally -- newstack()
@@ -178,15 +178,15 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 					// This keeps morestack() from showing up in the backtrace,
 					// but that makes some sense since it'll never be returned
 					// to.
-					gp = gp.m.curg
-					frame.pc = gp.sched.pc
+					setGNoWB(&itr.gp, itr.gp.m.curg)
+					frame.pc = itr.gp.sched.pc
 					frame.fn = findfunc(frame.pc)
 					f = frame.fn
 					flag = f.flag
-					frame.lr = gp.sched.lr
-					frame.sp = gp.sched.sp
-					stack = gp.stack
-					cgoCtxt = gp.cgoCtxt
+					frame.lr = itr.gp.sched.lr
+					frame.sp = itr.gp.sched.sp
+					stack = itr.gp.stack
+					cgoCtxt = itr.gp.cgoCtxt
 				case funcID_systemstack:
 					// systemstack returns normally, so just follow the
 					// stack transition.
@@ -201,10 +201,10 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 						flag &^= funcFlag_SPWRITE
 						break
 					}
-					gp = gp.m.curg
-					frame.sp = gp.sched.sp
-					stack = gp.stack
-					cgoCtxt = gp.cgoCtxt
+					setGNoWB(&itr.gp, itr.gp.m.curg)
+					frame.sp = itr.gp.sched.sp
+					stack = itr.gp.stack
+					cgoCtxt = itr.gp.cgoCtxt
 					flag &^= funcFlag_SPWRITE
 				}
 			}
@@ -263,7 +263,7 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 				// But if callback is set, we're doing a garbage collection and must
 				// get everything, so crash loudly.
 				doPrint := printing
-				if doPrint && gp.m.incgo && f.funcID == funcID_sigpanic {
+				if doPrint && itr.gp.m.incgo && f.funcID == funcID_sigpanic {
 					// We can inject sigpanic
 					// calls directly into C code,
 					// in which case we'll see a C
@@ -271,7 +271,7 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 					doPrint = false
 				}
 				if callback != nil || doPrint {
-					print("runtime: g ", gp.goid, ": unexpected return pc for ", funcname(f), " called from ", hex(frame.lr), "\n")
+					print("runtime: g ", itr.gp.goid, ": unexpected return pc for ", funcname(f), " called from ", hex(frame.lr), "\n")
 					tracebackHexdump(stack, &frame, lrPtr)
 				}
 				if callback != nil {
@@ -428,7 +428,7 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 					inlFunc.funcID = inltree[ix].funcID
 					inlFunc.startLine = inltree[ix].startLine
 
-					if (flags&_TraceRuntimeFrames) != 0 || showframe(inlFuncInfo, gp, nprint == 0, inlFuncInfo.funcID, lastFuncID) {
+					if (flags&_TraceRuntimeFrames) != 0 || showframe(inlFuncInfo, itr.gp, nprint == 0, inlFuncInfo.funcID, lastFuncID) {
 						name := funcname(inlFuncInfo)
 						file, line := funcline(f, tracepc)
 						print(name, "(...)\n")
@@ -440,7 +440,7 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 					tracepc = frame.fn.entry() + uintptr(inltree[ix].parentPc)
 				}
 			}
-			if (flags&_TraceRuntimeFrames) != 0 || showframe(f, gp, nprint == 0, f.funcID, lastFuncID) {
+			if (flags&_TraceRuntimeFrames) != 0 || showframe(f, itr.gp, nprint == 0, f.funcID, lastFuncID) {
 				// Print during crash.
 				//	main(0x1, 0x2, 0x3)
 				//		/home/rsc/go/src/runtime/x.go:23 +0xf
@@ -458,7 +458,7 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 				if frame.pc > f.entry() {
 					print(" +", hex(frame.pc-f.entry()))
 				}
-				if gp.m != nil && gp.m.throwing >= throwTypeRuntime && gp == gp.m.curg || level >= 2 {
+				if itr.gp.m != nil && itr.gp.m.throwing >= throwTypeRuntime && itr.gp == itr.gp.m.curg || level >= 2 {
 					print(" fp=", hex(frame.fp), " sp=", hex(frame.sp), " pc=", hex(frame.pc))
 				}
 				print("\n")
@@ -561,9 +561,9 @@ func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max 
 	// At other times, such as when gathering a stack for a profiling signal
 	// or when printing a traceback during a crash, everything may not be
 	// stopped nicely, and the stack walk may not be able to complete.
-	if callback != nil && n < max && frame.sp != gp.stktopsp {
-		print("runtime: g", gp.goid, ": frame.sp=", hex(frame.sp), " top=", hex(gp.stktopsp), "\n")
-		print("\tstack=[", hex(gp.stack.lo), "-", hex(gp.stack.hi), "] n=", n, " max=", max, "\n")
+	if callback != nil && n < max && frame.sp != itr.gp.stktopsp {
+		print("runtime: g", itr.gp.goid, ": frame.sp=", hex(frame.sp), " top=", hex(itr.gp.stktopsp), "\n")
+		print("\tstack=[", hex(itr.gp.stack.lo), "-", hex(itr.gp.stack.hi), "] n=", n, " max=", max, "\n")
 		throw("traceback did not unwind completely")
 	}
 
