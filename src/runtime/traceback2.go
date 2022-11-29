@@ -20,10 +20,10 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		pcbuf:    pcbuf,
 		max:      max,
 		callback: callback,
-		// v:        v,
+		v:        v,
 		// flags:    flags,
 	}
-	return itr.Gentraceback(v, flags)
+	return itr.Gentraceback(flags)
 }
 
 type tracebackIterator struct {
@@ -37,7 +37,7 @@ type tracebackIterator struct {
 	flags         uint
 }
 
-func (itr *tracebackIterator) Gentraceback(v unsafe.Pointer, flags uint) int {
+func (itr *tracebackIterator) Gentraceback(flags uint) int {
 	if itr.skip > 0 && itr.callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
@@ -337,7 +337,7 @@ func (itr *tracebackIterator) Gentraceback(v unsafe.Pointer, flags uint) int {
 		}
 
 		if itr.callback != nil {
-			if !itr.callback((*stkframe)(noescape(unsafe.Pointer(&frame))), v) {
+			if !itr.callback((*stkframe)(noescape(unsafe.Pointer(&frame))), noescape(itr.v)) {
 				return n
 			}
 		}
