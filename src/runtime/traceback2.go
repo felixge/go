@@ -37,9 +37,10 @@ type tracebackIterator struct {
 	v             unsafe.Pointer
 	flags         uint
 
-	level  int32
-	nprint int
-	frame  stkframe
+	level    int32
+	nprint   int
+	frame    stkframe
+	waspanic bool
 }
 
 func (itr *tracebackIterator) init() {
@@ -88,12 +89,13 @@ func (itr *tracebackIterator) init() {
 	if usesLR {
 		itr.frame.lr = itr.lr0
 	}
+
+	itr.waspanic = false
 }
 
 func (itr *tracebackIterator) Gentraceback() int {
 	frame := itr.frame
 
-	waspanic := false
 	cgoCtxt := itr.gp.cgoCtxt
 	stack := itr.gp.stack
 	printing := itr.pcbuf == nil && itr.callback == nil
@@ -328,7 +330,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 		// deferproc a second time (if the corresponding deferred func recovers).
 		// In the latter case, use a deferreturn call site as the continuation pc.
 		frame.continpc = frame.pc
-		if waspanic {
+		if itr.waspanic {
 			if frame.fn.deferreturn != 0 {
 				frame.continpc = frame.fn.entry() + uintptr(frame.fn.deferreturn) + 1
 				// Note: this may perhaps keep return variables alive longer than
@@ -366,7 +368,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 			// See issue 34123.
 			// The pc can be at function entry when the frame is initialized without
 			// actually running code, like runtime.mstart.
-			if (n == 0 && itr.flags&_TraceTrap != 0) || waspanic || pc == f.entry() {
+			if (n == 0 && itr.flags&_TraceTrap != 0) || itr.waspanic || pc == f.entry() {
 				pc++
 			} else {
 				tracepc--
@@ -417,7 +419,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 
 			// backup to CALL instruction to read inlining info (same logic as below)
 			tracepc := frame.pc
-			if (n > 0 || itr.flags&_TraceTrap == 0) && frame.pc > f.entry() && !waspanic {
+			if (n > 0 || itr.flags&_TraceTrap == 0) && frame.pc > f.entry() && !itr.waspanic {
 				tracepc--
 			}
 			// If there is inlining info, print the inner frames.
@@ -489,8 +491,8 @@ func (itr *tracebackIterator) Gentraceback() int {
 			}
 		}
 
-		waspanic = f.funcID == funcID_sigpanic
-		injectedCall := waspanic || f.funcID == funcID_asyncPreempt || f.funcID == funcID_debugCallV2
+		itr.waspanic = f.funcID == funcID_sigpanic
+		injectedCall := itr.waspanic || f.funcID == funcID_asyncPreempt || f.funcID == funcID_debugCallV2
 
 		// Do not unwind past the bottom of the stack.
 		if !flr.valid() {
