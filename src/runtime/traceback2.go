@@ -14,7 +14,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 	itr := tracebackIterator{
 		pc0: pc0,
 		sp0: sp0,
-		// lr0:      lr0,
+		lr0: lr0,
 		// gp:       gp,
 		// skip:     skip,
 		// pcbuf:    pcbuf,
@@ -23,7 +23,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		// v:        v,
 		// flags:    flags,
 	}
-	return itr.Gentraceback(lr0, gp, skip, pcbuf, max, callback, v, flags)
+	return itr.Gentraceback(gp, skip, pcbuf, max, callback, v, flags)
 }
 
 type tracebackIterator struct {
@@ -37,7 +37,7 @@ type tracebackIterator struct {
 	flags         uint
 }
 
-func (itr *tracebackIterator) Gentraceback(lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
+func (itr *tracebackIterator) Gentraceback(gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	if skip > 0 && callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
@@ -66,13 +66,13 @@ func (itr *tracebackIterator) Gentraceback(lr0 uintptr, gp *g, skip int, pcbuf *
 			itr.pc0 = gp.syscallpc
 			itr.sp0 = gp.syscallsp
 			if usesLR {
-				lr0 = 0
+				itr.lr0 = 0
 			}
 		} else {
 			itr.pc0 = gp.sched.pc
 			itr.sp0 = gp.sched.sp
 			if usesLR {
-				lr0 = gp.sched.lr
+				itr.lr0 = gp.sched.lr
 			}
 		}
 	}
@@ -82,7 +82,7 @@ func (itr *tracebackIterator) Gentraceback(lr0 uintptr, gp *g, skip int, pcbuf *
 	frame.pc = itr.pc0
 	frame.sp = itr.sp0
 	if usesLR {
-		frame.lr = lr0
+		frame.lr = itr.lr0
 	}
 	waspanic := false
 	cgoCtxt := gp.cgoCtxt
