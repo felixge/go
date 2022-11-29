@@ -12,18 +12,18 @@ import (
 
 func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	itr := tracebackIterator{
-		pc0:  pc0,
-		sp0:  sp0,
-		lr0:  lr0,
-		gp:   gp,
-		skip: skip,
-		// pcbuf:    pcbuf,
+		pc0:   pc0,
+		sp0:   sp0,
+		lr0:   lr0,
+		gp:    gp,
+		skip:  skip,
+		pcbuf: pcbuf,
 		// max:      max,
 		// callback: callback,
 		// v:        v,
 		// flags:    flags,
 	}
-	return itr.Gentraceback(pcbuf, max, callback, v, flags)
+	return itr.Gentraceback(max, callback, v, flags)
 }
 
 type tracebackIterator struct {
@@ -37,7 +37,7 @@ type tracebackIterator struct {
 	flags         uint
 }
 
-func (itr *tracebackIterator) Gentraceback(pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
+func (itr *tracebackIterator) Gentraceback(max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	if itr.skip > 0 && callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
@@ -87,7 +87,7 @@ func (itr *tracebackIterator) Gentraceback(pcbuf *uintptr, max int, callback fun
 	waspanic := false
 	cgoCtxt := itr.gp.cgoCtxt
 	stack := itr.gp.stack
-	printing := pcbuf == nil && callback == nil
+	printing := itr.pcbuf == nil && callback == nil
 
 	// If the PC is zero, it's likely a nil function call.
 	// Start in the caller's frame.
@@ -342,7 +342,7 @@ func (itr *tracebackIterator) Gentraceback(pcbuf *uintptr, max int, callback fun
 			}
 		}
 
-		if pcbuf != nil {
+		if itr.pcbuf != nil {
 			pc := frame.pc
 			// backup to CALL instruction to read inlining info (same logic as below)
 			tracepc := pc
@@ -376,7 +376,7 @@ func (itr *tracebackIterator) Gentraceback(pcbuf *uintptr, max int, callback fun
 					} else if itr.skip > 0 {
 						itr.skip--
 					} else if n < max {
-						(*[1 << 20]uintptr)(unsafe.Pointer(pcbuf))[n] = pc
+						(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[n] = pc
 						n++
 					}
 					lastFuncID = inltree[ix].funcID
@@ -391,7 +391,7 @@ func (itr *tracebackIterator) Gentraceback(pcbuf *uintptr, max int, callback fun
 			} else if itr.skip > 0 {
 				itr.skip--
 			} else if n < max {
-				(*[1 << 20]uintptr)(unsafe.Pointer(pcbuf))[n] = pc
+				(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[n] = pc
 				n++
 			}
 			lastFuncID = f.funcID
@@ -476,7 +476,7 @@ func (itr *tracebackIterator) Gentraceback(pcbuf *uintptr, max int, callback fun
 			// callback != nil only used when we only care
 			// about Go frames.
 			if itr.skip == 0 && callback == nil {
-				n = tracebackCgoContext(pcbuf, printing, ctxt, n, max)
+				n = tracebackCgoContext(itr.pcbuf, printing, ctxt, n, max)
 			}
 		}
 
