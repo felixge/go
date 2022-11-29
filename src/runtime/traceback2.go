@@ -94,7 +94,7 @@ func (itr *tracebackIterator) init() {
 	}
 
 	itr.waspanic = false
-	setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
+	setSliceNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 	itr.stack = itr.gp.stack
 	itr.printing = itr.pcbuf == nil && itr.callback == nil
 
@@ -199,7 +199,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					frame.lr = itr.gp.sched.lr
 					frame.sp = itr.gp.sched.sp
 					itr.stack = itr.gp.stack
-					setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
+					setSliceNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 				case funcID_systemstack:
 					// systemstack returns normally, so just follow the
 					// stack transition.
@@ -217,7 +217,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					setGNoWB(&itr.gp, itr.gp.m.curg)
 					frame.sp = itr.gp.sched.sp
 					itr.stack = itr.gp.stack
-					setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
+					setSliceNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 					flag &^= funcFlag_SPWRITE
 				}
 			}
@@ -584,10 +584,22 @@ func (itr *tracebackIterator) Gentraceback() int {
 
 }
 
-// setNoWB performs dst = &src without a write barrier.
+// setNoWB performs *dst = src without a write barrier.
 //
 //go:nosplit
 //go:nowritebarrier
-func setNoWB[T any](dst *T, src T) {
-	*(*uintptr)(unsafe.Pointer(dst)) = uintptr(unsafe.Pointer(&src))
+func setNoWB[T any](dst **T, src *T) {
+	*(*uintptr)(unsafe.Pointer(dst)) = uintptr(unsafe.Pointer(src))
+}
+
+// setSliceNoWB performs *dst = src without a write barrier.
+//
+//go:nosplit
+//go:nowritebarrier
+func setSliceNoWB[T any](dst *[]T, src []T) {
+	srcHdr := (*slice)(unsafe.Pointer(&src))
+	dstHdr := (*slice)(unsafe.Pointer(dst))
+	dstHdr.len = srcHdr.len
+	dstHdr.cap = srcHdr.cap
+	*(*uintptr)(unsafe.Pointer(&dstHdr.array)) = uintptr(srcHdr.array)
 }
