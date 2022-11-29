@@ -18,12 +18,12 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		gp:    gp,
 		skip:  skip,
 		pcbuf: pcbuf,
-		// max:      max,
+		max:   max,
 		// callback: callback,
 		// v:        v,
 		// flags:    flags,
 	}
-	return itr.Gentraceback(max, callback, v, flags)
+	return itr.Gentraceback(callback, v, flags)
 }
 
 type tracebackIterator struct {
@@ -37,7 +37,7 @@ type tracebackIterator struct {
 	flags         uint
 }
 
-func (itr *tracebackIterator) Gentraceback(max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
+func (itr *tracebackIterator) Gentraceback(callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	if itr.skip > 0 && callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
@@ -132,7 +132,7 @@ func (itr *tracebackIterator) Gentraceback(max int, callback func(*stkframe, uns
 
 	lastFuncID := funcID_normal
 	n := 0
-	for n < max {
+	for n < itr.max {
 		// Typically:
 		//	pc is the PC of the running function.
 		//	sp is the stack pointer at that program counter.
@@ -375,7 +375,7 @@ func (itr *tracebackIterator) Gentraceback(max int, callback func(*stkframe, uns
 						// ignore wrappers
 					} else if itr.skip > 0 {
 						itr.skip--
-					} else if n < max {
+					} else if n < itr.max {
 						(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[n] = pc
 						n++
 					}
@@ -390,7 +390,7 @@ func (itr *tracebackIterator) Gentraceback(max int, callback func(*stkframe, uns
 				// Ignore wrapper functions (except when they trigger panics).
 			} else if itr.skip > 0 {
 				itr.skip--
-			} else if n < max {
+			} else if n < itr.max {
 				(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[n] = pc
 				n++
 			}
@@ -476,7 +476,7 @@ func (itr *tracebackIterator) Gentraceback(max int, callback func(*stkframe, uns
 			// callback != nil only used when we only care
 			// about Go frames.
 			if itr.skip == 0 && callback == nil {
-				n = tracebackCgoContext(itr.pcbuf, printing, ctxt, n, max)
+				n = tracebackCgoContext(itr.pcbuf, printing, ctxt, n, itr.max)
 			}
 		}
 
@@ -561,9 +561,9 @@ func (itr *tracebackIterator) Gentraceback(max int, callback func(*stkframe, uns
 	// At other times, such as when gathering a stack for a profiling signal
 	// or when printing a traceback during a crash, everything may not be
 	// stopped nicely, and the stack walk may not be able to complete.
-	if callback != nil && n < max && frame.sp != itr.gp.stktopsp {
+	if callback != nil && n < itr.max && frame.sp != itr.gp.stktopsp {
 		print("runtime: g", itr.gp.goid, ": frame.sp=", hex(frame.sp), " top=", hex(itr.gp.stktopsp), "\n")
-		print("\tstack=[", hex(itr.gp.stack.lo), "-", hex(itr.gp.stack.hi), "] n=", n, " max=", max, "\n")
+		print("\tstack=[", hex(itr.gp.stack.lo), "-", hex(itr.gp.stack.hi), "] n=", n, " max=", itr.max, "\n")
 		throw("traceback did not unwind completely")
 	}
 
