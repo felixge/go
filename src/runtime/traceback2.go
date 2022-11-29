@@ -25,8 +25,61 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 	}
 	if !itr.init() {
 		return 0
+	} else if !itr.Gentraceback() {
+		return itr.n
 	}
-	return itr.Gentraceback()
+
+	if itr.printing {
+		itr.n = itr.nprint
+	}
+
+	// Note that panic != nil is okay here: there can be leftover panics,
+	// because the defers on the panic stack do not nest in frame order as
+	// they do on the defer stack. If you have:
+	//
+	//	frame 1 defers d1
+	//	frame 2 defers d2
+	//	frame 3 defers d3
+	//	frame 4 panics
+	//	frame 4's panic starts running defers
+	//	frame 5, running d3, defers d4
+	//	frame 5 panics
+	//	frame 5's panic starts running defers
+	//	frame 6, running d4, garbage collects
+	//	frame 6, running d2, garbage collects
+	//
+	// During the execution of d4, the panic stack is d4 -> d3, which
+	// is nested properly, and we'll treat frame 3 as resumable, because we
+	// can find d3. (And in fact frame 3 is resumable. If d4 recovers
+	// and frame 5 continues running, d3, d3 can recover and we'll
+	// resume execution in (returning from) frame 3.)
+	//
+	// During the execution of d2, however, the panic stack is d2 -> d3,
+	// which is inverted. The scan will match d2 to frame 2 but having
+	// d2 on the stack until then means it will not match d3 to frame 3.
+	// This is okay: if we're running d2, then all the defers after d2 have
+	// completed and their corresponding frames are dead. Not finding d3
+	// for frame 3 means we'll set frame 3's continpc == 0, which is correct
+	// (frame 3 is dead). At the end of the walk the panic stack can thus
+	// contain defers (d3 in this case) for dead frames. The inversion here
+	// always indicates a dead frame, and the effect of the inversion on the
+	// scan is to hide those dead frames, so the scan is still okay:
+	// what's left on the panic stack are exactly (and only) the dead frames.
+	//
+	// We require callback != nil here because only when callback != nil
+	// do we know that gentraceback is being called in a "must be correct"
+	// context as opposed to a "best effort" context. The tracebacks with
+	// callbacks only happen when everything is stopped nicely.
+	// At other times, such as when gathering a stack for a profiling signal
+	// or when printing a traceback during a crash, everything may not be
+	// stopped nicely, and the stack walk may not be able to complete.
+	if itr.callback != nil && itr.n < itr.max && itr.frame.sp != itr.gp.stktopsp {
+		print("runtime: g", itr.gp.goid, ": frame.sp=", hex(itr.frame.sp), " top=", hex(itr.gp.stktopsp), "\n")
+		print("\tstack=[", hex(itr.gp.stack.lo), "-", hex(itr.gp.stack.hi), "] n=", itr.n, " max=", itr.max, "\n")
+		throw("traceback did not unwind completely")
+	}
+
+	return itr.n
 }
 
 type tracebackIterator struct {
@@ -147,7 +200,7 @@ func (itr *tracebackIterator) init() bool {
 	return true
 }
 
-func (itr *tracebackIterator) Gentraceback() int {
+func (itr *tracebackIterator) Gentraceback() bool {
 	f := itr.frame.fn
 	for itr.n < itr.max {
 		// Typically:
@@ -355,7 +408,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 
 		if itr.callback != nil {
 			if !itr.callback((*stkframe)(noescape(unsafe.Pointer(&itr.frame))), noescape(itr.v)) {
-				return itr.n
+				return false
 			}
 		}
 
@@ -533,58 +586,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 			}
 		}
 	}
-
-	if itr.printing {
-		itr.n = itr.nprint
-	}
-
-	// Note that panic != nil is okay here: there can be leftover panics,
-	// because the defers on the panic stack do not nest in frame order as
-	// they do on the defer stack. If you have:
-	//
-	//	frame 1 defers d1
-	//	frame 2 defers d2
-	//	frame 3 defers d3
-	//	frame 4 panics
-	//	frame 4's panic starts running defers
-	//	frame 5, running d3, defers d4
-	//	frame 5 panics
-	//	frame 5's panic starts running defers
-	//	frame 6, running d4, garbage collects
-	//	frame 6, running d2, garbage collects
-	//
-	// During the execution of d4, the panic stack is d4 -> d3, which
-	// is nested properly, and we'll treat frame 3 as resumable, because we
-	// can find d3. (And in fact frame 3 is resumable. If d4 recovers
-	// and frame 5 continues running, d3, d3 can recover and we'll
-	// resume execution in (returning from) frame 3.)
-	//
-	// During the execution of d2, however, the panic stack is d2 -> d3,
-	// which is inverted. The scan will match d2 to frame 2 but having
-	// d2 on the stack until then means it will not match d3 to frame 3.
-	// This is okay: if we're running d2, then all the defers after d2 have
-	// completed and their corresponding frames are dead. Not finding d3
-	// for frame 3 means we'll set frame 3's continpc == 0, which is correct
-	// (frame 3 is dead). At the end of the walk the panic stack can thus
-	// contain defers (d3 in this case) for dead frames. The inversion here
-	// always indicates a dead frame, and the effect of the inversion on the
-	// scan is to hide those dead frames, so the scan is still okay:
-	// what's left on the panic stack are exactly (and only) the dead frames.
-	//
-	// We require callback != nil here because only when callback != nil
-	// do we know that gentraceback is being called in a "must be correct"
-	// context as opposed to a "best effort" context. The tracebacks with
-	// callbacks only happen when everything is stopped nicely.
-	// At other times, such as when gathering a stack for a profiling signal
-	// or when printing a traceback during a crash, everything may not be
-	// stopped nicely, and the stack walk may not be able to complete.
-	if itr.callback != nil && itr.n < itr.max && itr.frame.sp != itr.gp.stktopsp {
-		print("runtime: g", itr.gp.goid, ": frame.sp=", hex(itr.frame.sp), " top=", hex(itr.gp.stktopsp), "\n")
-		print("\tstack=[", hex(itr.gp.stack.lo), "-", hex(itr.gp.stack.hi), "] n=", itr.n, " max=", itr.max, "\n")
-		throw("traceback did not unwind completely")
-	}
-
-	return itr.n
+	return true
 }
 
 // setNoWB performs *dst = src without a write barrier.
