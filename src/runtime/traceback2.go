@@ -97,20 +97,16 @@ func (itr *tracebackIterator) init() {
 	setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 	itr.stack = itr.gp.stack
 	itr.printing = itr.pcbuf == nil && itr.callback == nil
-}
-
-func (itr *tracebackIterator) Gentraceback() int {
-	frame := itr.frame
 
 	// If the PC is zero, it's likely a nil function call.
 	// Start in the caller's frame.
-	if frame.pc == 0 {
+	if itr.frame.pc == 0 {
 		if usesLR {
-			frame.pc = *(*uintptr)(unsafe.Pointer(frame.sp))
-			frame.lr = 0
+			itr.frame.pc = *(*uintptr)(unsafe.Pointer(itr.frame.sp))
+			itr.frame.lr = 0
 		} else {
-			frame.pc = uintptr(*(*uintptr)(unsafe.Pointer(frame.sp)))
-			frame.sp += goarch.PtrSize
+			itr.frame.pc = uintptr(*(*uintptr)(unsafe.Pointer(itr.frame.sp)))
+			itr.frame.sp += goarch.PtrSize
 		}
 	}
 
@@ -118,15 +114,19 @@ func (itr *tracebackIterator) Gentraceback() int {
 	// arm < 7. See runtime/internal/atomic/sys_linux_arm.s.
 	//
 	// Start in the caller's frame.
-	if GOARCH == "arm" && goarm < 7 && GOOS == "linux" && frame.pc&0xffff0000 == 0xffff0000 {
+	if GOARCH == "arm" && goarm < 7 && GOOS == "linux" && itr.frame.pc&0xffff0000 == 0xffff0000 {
 		// Note that the calls are simple BL without pushing the return
 		// address, so we use LR directly.
 		//
 		// The kernel helpers are frameless leaf functions, so SP and
 		// LR are not touched.
-		frame.pc = frame.lr
-		frame.lr = 0
+		itr.frame.pc = itr.frame.lr
+		itr.frame.lr = 0
 	}
+}
+
+func (itr *tracebackIterator) Gentraceback() int {
+	frame := itr.frame
 
 	f := findfunc(frame.pc)
 	if !f.valid() {
