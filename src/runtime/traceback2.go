@@ -23,6 +23,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		v:        v,
 		flags:    flags,
 	}
+	itr.init()
 	return itr.Gentraceback()
 }
 
@@ -37,7 +38,7 @@ type tracebackIterator struct {
 	flags         uint
 }
 
-func (itr *tracebackIterator) Gentraceback() int {
+func (itr *tracebackIterator) init() {
 	if itr.skip > 0 && itr.callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
@@ -59,6 +60,9 @@ func (itr *tracebackIterator) Gentraceback() int {
 		// instead on the g0 stack.
 		throw("gentraceback cannot trace user goroutine on its own stack")
 	}
+}
+
+func (itr *tracebackIterator) Gentraceback() int {
 	level, _, _ := gotraceback()
 
 	if itr.pc0 == ^uintptr(0) && itr.sp0 == ^uintptr(0) { // Signal to fetch saved values from gp.
