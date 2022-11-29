@@ -42,6 +42,7 @@ type tracebackIterator struct {
 	frame    stkframe
 	waspanic bool
 	cgoCtxt  []uintptr
+	stack    stack
 }
 
 func (itr *tracebackIterator) init() {
@@ -93,12 +94,11 @@ func (itr *tracebackIterator) init() {
 
 	itr.waspanic = false
 	setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
+	itr.stack = itr.gp.stack
 }
 
 func (itr *tracebackIterator) Gentraceback() int {
 	frame := itr.frame
-
-	stack := itr.gp.stack
 	printing := itr.pcbuf == nil && itr.callback == nil
 
 	// If the PC is zero, it's likely a nil function call.
@@ -131,7 +131,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 	if !f.valid() {
 		if itr.callback != nil || printing {
 			print("runtime: g ", itr.gp.goid, ": unknown pc ", hex(frame.pc), "\n")
-			tracebackHexdump(stack, &frame, 0)
+			tracebackHexdump(itr.stack, &frame, 0)
 		}
 		if itr.callback != nil {
 			throw("unknown pc")
@@ -197,7 +197,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					flag = f.flag
 					frame.lr = itr.gp.sched.lr
 					frame.sp = itr.gp.sched.sp
-					stack = itr.gp.stack
+					itr.stack = itr.gp.stack
 					setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 				case funcID_systemstack:
 					// systemstack returns normally, so just follow the
@@ -215,7 +215,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					}
 					setGNoWB(&itr.gp, itr.gp.m.curg)
 					frame.sp = itr.gp.sched.sp
-					stack = itr.gp.stack
+					itr.stack = itr.gp.stack
 					setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 					flag &^= funcFlag_SPWRITE
 				}
@@ -284,7 +284,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 				}
 				if itr.callback != nil || doPrint {
 					print("runtime: g ", itr.gp.goid, ": unexpected return pc for ", funcname(f), " called from ", hex(frame.lr), "\n")
-					tracebackHexdump(stack, &frame, lrPtr)
+					tracebackHexdump(itr.stack, &frame, lrPtr)
 				}
 				if itr.callback != nil {
 					throw("unknown caller pc")
@@ -503,7 +503,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 		if frame.pc == frame.lr && frame.sp == frame.fp {
 			// If the next frame is identical to the current frame, we cannot make progress.
 			print("runtime: traceback stuck. pc=", hex(frame.pc), " sp=", hex(frame.sp), "\n")
-			tracebackHexdump(stack, &frame, frame.sp)
+			tracebackHexdump(itr.stack, &frame, frame.sp)
 			throw("traceback stuck")
 		}
 
