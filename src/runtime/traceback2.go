@@ -23,7 +23,9 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		v:        v,
 		flags:    flags,
 	}
-	itr.init()
+	if !itr.init() {
+		return 0
+	}
 	return itr.Gentraceback()
 }
 
@@ -46,7 +48,7 @@ type tracebackIterator struct {
 	printing bool
 }
 
-func (itr *tracebackIterator) init() {
+func (itr *tracebackIterator) init() bool {
 	if itr.skip > 0 && itr.callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
@@ -123,23 +125,25 @@ func (itr *tracebackIterator) init() {
 		itr.frame.pc = itr.frame.lr
 		itr.frame.lr = 0
 	}
-}
 
-func (itr *tracebackIterator) Gentraceback() int {
-	frame := itr.frame
-
-	f := findfunc(frame.pc)
+	f := findfunc(itr.frame.pc)
 	if !f.valid() {
 		if itr.callback != nil || itr.printing {
-			print("runtime: g ", itr.gp.goid, ": unknown pc ", hex(frame.pc), "\n")
-			tracebackHexdump(itr.stack, &frame, 0)
+			print("runtime: g ", itr.gp.goid, ": unknown pc ", hex(itr.frame.pc), "\n")
+			tracebackHexdump(itr.stack, &itr.frame, 0)
 		}
 		if itr.callback != nil {
 			throw("unknown pc")
 		}
-		return 0
+		return false
 	}
-	frame.fn = f
+	setFuncInfoNoWB(&itr.frame.fn, f)
+	return true
+}
+
+func (itr *tracebackIterator) Gentraceback() int {
+	frame := itr.frame
+	f := itr.frame.fn
 
 	var cache pcvalueCache
 
@@ -602,4 +606,13 @@ func setSliceNoWB[T any](dst *[]T, src []T) {
 	dstHdr.len = srcHdr.len
 	dstHdr.cap = srcHdr.cap
 	*(*uintptr)(unsafe.Pointer(&dstHdr.array)) = uintptr(srcHdr.array)
+}
+
+// setFuncInfoNoWB performs *dst = src without a write barrier.
+//
+//go:nosplit
+//go:nowritebarrier
+func setFuncInfoNoWB(dst *funcInfo, src funcInfo) {
+	setNoWB(&dst._func, src._func)
+	setNoWB(&dst.datap, src.datap)
 }
