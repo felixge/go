@@ -36,6 +36,8 @@ type tracebackIterator struct {
 	callback      func(*stkframe, unsafe.Pointer) bool
 	v             unsafe.Pointer
 	flags         uint
+
+	level int32
 }
 
 func (itr *tracebackIterator) init() {
@@ -60,10 +62,7 @@ func (itr *tracebackIterator) init() {
 		// instead on the g0 stack.
 		throw("gentraceback cannot trace user goroutine on its own stack")
 	}
-}
-
-func (itr *tracebackIterator) Gentraceback() int {
-	level, _, _ := gotraceback()
+	itr.level, _, _ = gotraceback()
 
 	if itr.pc0 == ^uintptr(0) && itr.sp0 == ^uintptr(0) { // Signal to fetch saved values from gp.
 		if itr.gp.syscallsp != 0 {
@@ -80,6 +79,9 @@ func (itr *tracebackIterator) Gentraceback() int {
 			}
 		}
 	}
+}
+
+func (itr *tracebackIterator) Gentraceback() int {
 
 	nprint := 0
 	var frame stkframe
@@ -462,7 +464,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 				if frame.pc > f.entry() {
 					print(" +", hex(frame.pc-f.entry()))
 				}
-				if itr.gp.m != nil && itr.gp.m.throwing >= throwTypeRuntime && itr.gp == itr.gp.m.curg || level >= 2 {
+				if itr.gp.m != nil && itr.gp.m.throwing >= throwTypeRuntime && itr.gp == itr.gp.m.curg || itr.level >= 2 {
 					print(" fp=", hex(frame.fp), " sp=", hex(frame.sp), " pc=", hex(frame.pc))
 				}
 				print("\n")
