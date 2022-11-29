@@ -13,7 +13,7 @@ import (
 func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	itr := tracebackIterator{
 		pc0: pc0,
-		// sp0:      sp0,
+		sp0: sp0,
 		// lr0:      lr0,
 		// gp:       gp,
 		// skip:     skip,
@@ -23,7 +23,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		// v:        v,
 		// flags:    flags,
 	}
-	return itr.Gentraceback(sp0, lr0, gp, skip, pcbuf, max, callback, v, flags)
+	return itr.Gentraceback(lr0, gp, skip, pcbuf, max, callback, v, flags)
 }
 
 type tracebackIterator struct {
@@ -37,7 +37,7 @@ type tracebackIterator struct {
 	flags         uint
 }
 
-func (itr *tracebackIterator) Gentraceback(sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
+func (itr *tracebackIterator) Gentraceback(lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	if skip > 0 && callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
@@ -61,16 +61,16 @@ func (itr *tracebackIterator) Gentraceback(sp0, lr0 uintptr, gp *g, skip int, pc
 	}
 	level, _, _ := gotraceback()
 
-	if itr.pc0 == ^uintptr(0) && sp0 == ^uintptr(0) { // Signal to fetch saved values from gp.
+	if itr.pc0 == ^uintptr(0) && itr.sp0 == ^uintptr(0) { // Signal to fetch saved values from gp.
 		if gp.syscallsp != 0 {
 			itr.pc0 = gp.syscallpc
-			sp0 = gp.syscallsp
+			itr.sp0 = gp.syscallsp
 			if usesLR {
 				lr0 = 0
 			}
 		} else {
 			itr.pc0 = gp.sched.pc
-			sp0 = gp.sched.sp
+			itr.sp0 = gp.sched.sp
 			if usesLR {
 				lr0 = gp.sched.lr
 			}
@@ -80,7 +80,7 @@ func (itr *tracebackIterator) Gentraceback(sp0, lr0 uintptr, gp *g, skip int, pc
 	nprint := 0
 	var frame stkframe
 	frame.pc = itr.pc0
-	frame.sp = sp0
+	frame.sp = itr.sp0
 	if usesLR {
 		frame.lr = lr0
 	}
@@ -155,7 +155,7 @@ func (itr *tracebackIterator) Gentraceback(sp0, lr0 uintptr, gp *g, skip int, pc
 			// So we don't need to exclude it with the other SP-writing functions.
 			flag &^= funcFlag_SPWRITE
 		}
-		if frame.pc == itr.pc0 && frame.sp == sp0 && itr.pc0 == gp.syscallpc && sp0 == gp.syscallsp {
+		if frame.pc == itr.pc0 && frame.sp == itr.sp0 && itr.pc0 == gp.syscallpc && itr.sp0 == gp.syscallsp {
 			// Some Syscall functions write to SP, but they do so only after
 			// saving the entry PC/SP using entersyscall.
 			// Since we are using the entry PC/SP, the later SP write doesn't matter.
