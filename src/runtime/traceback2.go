@@ -142,7 +142,6 @@ func (itr *tracebackIterator) init() bool {
 }
 
 func (itr *tracebackIterator) Gentraceback() int {
-	frame := itr.frame
 	f := itr.frame.fn
 
 	var cache pcvalueCache
@@ -156,7 +155,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 		//	fp is the frame pointer (caller's stack pointer) at that program counter, or nil if unknown.
 		//	stk is the stack containing sp.
 		//	The caller's program counter is lr, unless lr is zero, in which case it is *(uintptr*)sp.
-		f = frame.fn
+		f = itr.frame.fn
 		if f.pcsp == 0 {
 			// No frame information, must be external function, like race support.
 			// See golang.org/issue/13568.
@@ -172,7 +171,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 			// So we don't need to exclude it with the other SP-writing functions.
 			flag &^= funcFlag_SPWRITE
 		}
-		if frame.pc == itr.pc0 && frame.sp == itr.sp0 && itr.pc0 == itr.gp.syscallpc && itr.sp0 == itr.gp.syscallsp {
+		if itr.frame.pc == itr.pc0 && itr.frame.sp == itr.sp0 && itr.pc0 == itr.gp.syscallpc && itr.sp0 == itr.gp.syscallsp {
 			// Some Syscall functions write to SP, but they do so only after
 			// saving the entry PC/SP using entersyscall.
 			// Since we are using the entry PC/SP, the later SP write doesn't matter.
@@ -181,7 +180,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 
 		// Found an actual function.
 		// Derive frame pointer and link register.
-		if frame.fp == 0 {
+		if itr.frame.fp == 0 {
 			// Jump over system stack transitions. If we're on g0 and there's a user
 			// goroutine, try to jump. Otherwise this is a regular call.
 			// We also defensively check that this won't switch M's on us,
@@ -196,18 +195,18 @@ func (itr *tracebackIterator) Gentraceback() int {
 					// but that makes some sense since it'll never be returned
 					// to.
 					setGNoWB(&itr.gp, itr.gp.m.curg)
-					frame.pc = itr.gp.sched.pc
-					frame.fn = findfunc(frame.pc)
-					f = frame.fn
+					itr.frame.pc = itr.gp.sched.pc
+					setFuncInfoNoWB(&itr.frame.fn, findfunc(itr.frame.pc))
+					f = itr.frame.fn
 					flag = f.flag
-					frame.lr = itr.gp.sched.lr
-					frame.sp = itr.gp.sched.sp
+					itr.frame.lr = itr.gp.sched.lr
+					itr.frame.sp = itr.gp.sched.sp
 					itr.stack = itr.gp.stack
 					setSliceNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 				case funcID_systemstack:
 					// systemstack returns normally, so just follow the
 					// stack transition.
-					if usesLR && funcspdelta(f, frame.pc, &cache) == 0 {
+					if usesLR && funcspdelta(f, itr.frame.pc, &cache) == 0 {
 						// We're at the function prologue and the stack
 						// switch hasn't happened, or epilogue where we're
 						// about to return. Just unwind normally.
@@ -219,22 +218,22 @@ func (itr *tracebackIterator) Gentraceback() int {
 						break
 					}
 					setGNoWB(&itr.gp, itr.gp.m.curg)
-					frame.sp = itr.gp.sched.sp
+					itr.frame.sp = itr.gp.sched.sp
 					itr.stack = itr.gp.stack
 					setSliceNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 					flag &^= funcFlag_SPWRITE
 				}
 			}
-			frame.fp = frame.sp + uintptr(funcspdelta(f, frame.pc, &cache))
+			itr.frame.fp = itr.frame.sp + uintptr(funcspdelta(f, itr.frame.pc, &cache))
 			if !usesLR {
 				// On x86, call instruction pushes return PC before entering new function.
-				frame.fp += goarch.PtrSize
+				itr.frame.fp += goarch.PtrSize
 			}
 		}
 		var flr funcInfo
 		if flag&funcFlag_TOPFRAME != 0 {
 			// This function marks the top of the stack. Stop the traceback.
-			frame.lr = 0
+			itr.frame.lr = 0
 			flr = funcInfo{}
 		} else if flag&funcFlag_SPWRITE != 0 && (itr.callback == nil || n > 0) {
 			// The function we are in does a write to SP that we don't know
@@ -258,22 +257,22 @@ func (itr *tracebackIterator) Gentraceback() int {
 				println("traceback: unexpected SPWRITE function", funcname(f))
 				throw("traceback")
 			}
-			frame.lr = 0
+			itr.frame.lr = 0
 			flr = funcInfo{}
 		} else {
 			var lrPtr uintptr
 			if usesLR {
-				if n == 0 && frame.sp < frame.fp || frame.lr == 0 {
-					lrPtr = frame.sp
-					frame.lr = *(*uintptr)(unsafe.Pointer(lrPtr))
+				if n == 0 && itr.frame.sp < itr.frame.fp || itr.frame.lr == 0 {
+					lrPtr = itr.frame.sp
+					itr.frame.lr = *(*uintptr)(unsafe.Pointer(lrPtr))
 				}
 			} else {
-				if frame.lr == 0 {
-					lrPtr = frame.fp - goarch.PtrSize
-					frame.lr = uintptr(*(*uintptr)(unsafe.Pointer(lrPtr)))
+				if itr.frame.lr == 0 {
+					lrPtr = itr.frame.fp - goarch.PtrSize
+					itr.frame.lr = uintptr(*(*uintptr)(unsafe.Pointer(lrPtr)))
 				}
 			}
-			flr = findfunc(frame.lr)
+			flr = findfunc(itr.frame.lr)
 			if !flr.valid() {
 				// This happens if you get a profiling interrupt at just the wrong time.
 				// In that context it is okay to stop early.
@@ -288,8 +287,8 @@ func (itr *tracebackIterator) Gentraceback() int {
 					doPrint = false
 				}
 				if itr.callback != nil || doPrint {
-					print("runtime: g ", itr.gp.goid, ": unexpected return pc for ", funcname(f), " called from ", hex(frame.lr), "\n")
-					tracebackHexdump(itr.stack, &frame, lrPtr)
+					print("runtime: g ", itr.gp.goid, ": unexpected return pc for ", funcname(f), " called from ", hex(itr.frame.lr), "\n")
+					tracebackHexdump(itr.stack, &itr.frame, lrPtr)
 				}
 				if itr.callback != nil {
 					throw("unknown caller pc")
@@ -297,10 +296,10 @@ func (itr *tracebackIterator) Gentraceback() int {
 			}
 		}
 
-		frame.varp = frame.fp
+		itr.frame.varp = itr.frame.fp
 		if !usesLR {
 			// On x86, call instruction pushes return PC before entering new function.
-			frame.varp -= goarch.PtrSize
+			itr.frame.varp -= goarch.PtrSize
 		}
 
 		// For architectures with frame pointers, if there's
@@ -320,11 +319,11 @@ func (itr *tracebackIterator) Gentraceback() int {
 		// This is technically ABI-compatible but not standard.
 		// And it happens to end up mimicking the x86 layout.
 		// Other architectures may make different decisions.
-		if frame.varp > frame.sp && framepointer_enabled {
-			frame.varp -= goarch.PtrSize
+		if itr.frame.varp > itr.frame.sp && framepointer_enabled {
+			itr.frame.varp -= goarch.PtrSize
 		}
 
-		frame.argp = frame.fp + sys.MinFrameSize
+		itr.frame.argp = itr.frame.fp + sys.MinFrameSize
 
 		// Determine frame's 'continuation PC', where it can continue.
 		// Normally this is the return address on the stack, but if sigpanic
@@ -335,10 +334,10 @@ func (itr *tracebackIterator) Gentraceback() int {
 		// defers do not recover) or it returns from one of the calls to
 		// deferproc a second time (if the corresponding deferred func recovers).
 		// In the latter case, use a deferreturn call site as the continuation pc.
-		frame.continpc = frame.pc
+		itr.frame.continpc = itr.frame.pc
 		if itr.waspanic {
-			if frame.fn.deferreturn != 0 {
-				frame.continpc = frame.fn.entry() + uintptr(frame.fn.deferreturn) + 1
+			if itr.frame.fn.deferreturn != 0 {
+				itr.frame.continpc = itr.frame.fn.entry() + uintptr(itr.frame.fn.deferreturn) + 1
 				// Note: this may perhaps keep return variables alive longer than
 				// strictly necessary, as we are using "function has a defer statement"
 				// as a proxy for "function actually deferred something". It seems
@@ -349,18 +348,18 @@ func (itr *tracebackIterator) Gentraceback() int {
 				// stack.go:getStackMap does to back up a return
 				// address make sure the pc is in the CALL instruction.
 			} else {
-				frame.continpc = 0
+				itr.frame.continpc = 0
 			}
 		}
 
 		if itr.callback != nil {
-			if !itr.callback((*stkframe)(noescape(unsafe.Pointer(&frame))), noescape(itr.v)) {
+			if !itr.callback((*stkframe)(noescape(unsafe.Pointer(&itr.frame))), noescape(itr.v)) {
 				return n
 			}
 		}
 
 		if itr.pcbuf != nil {
-			pc := frame.pc
+			pc := itr.frame.pc
 			// backup to CALL instruction to read inlining info (same logic as below)
 			tracepc := pc
 			// Normally, pc is a return address. In that case, we want to look up
@@ -398,7 +397,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					}
 					lastFuncID = inltree[ix].funcID
 					// Back up to an instruction in the "caller".
-					tracepc = frame.fn.entry() + uintptr(inltree[ix].parentPc)
+					tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
 					pc = tracepc + 1
 				}
 			}
@@ -424,8 +423,8 @@ func (itr *tracebackIterator) Gentraceback() int {
 			// function. Otherwise, leave them out.
 
 			// backup to CALL instruction to read inlining info (same logic as below)
-			tracepc := frame.pc
-			if (n > 0 || itr.flags&_TraceTrap == 0) && frame.pc > f.entry() && !itr.waspanic {
+			tracepc := itr.frame.pc
+			if (n > 0 || itr.flags&_TraceTrap == 0) && itr.frame.pc > f.entry() && !itr.waspanic {
 				tracepc--
 			}
 			// If there is inlining info, print the inner frames.
@@ -454,7 +453,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					}
 					lastFuncID = inltree[ix].funcID
 					// Back up to an instruction in the "caller".
-					tracepc = frame.fn.entry() + uintptr(inltree[ix].parentPc)
+					tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
 				}
 			}
 			if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(f, itr.gp, itr.nprint == 0, f.funcID, lastFuncID) {
@@ -468,15 +467,15 @@ func (itr *tracebackIterator) Gentraceback() int {
 					name = "panic"
 				}
 				print(name, "(")
-				argp := unsafe.Pointer(frame.argp)
+				argp := unsafe.Pointer(itr.frame.argp)
 				printArgs(f, argp, tracepc)
 				print(")\n")
 				print("\t", file, ":", line)
-				if frame.pc > f.entry() {
-					print(" +", hex(frame.pc-f.entry()))
+				if itr.frame.pc > f.entry() {
+					print(" +", hex(itr.frame.pc-f.entry()))
 				}
 				if itr.gp.m != nil && itr.gp.m.throwing >= throwTypeRuntime && itr.gp == itr.gp.m.curg || itr.level >= 2 {
-					print(" fp=", hex(frame.fp), " sp=", hex(frame.sp), " pc=", hex(frame.pc))
+					print(" fp=", hex(itr.frame.fp), " sp=", hex(itr.frame.sp), " pc=", hex(itr.frame.pc))
 				}
 				print("\n")
 				itr.nprint++
@@ -505,31 +504,31 @@ func (itr *tracebackIterator) Gentraceback() int {
 			break
 		}
 
-		if frame.pc == frame.lr && frame.sp == frame.fp {
+		if itr.frame.pc == itr.frame.lr && itr.frame.sp == itr.frame.fp {
 			// If the next frame is identical to the current frame, we cannot make progress.
-			print("runtime: traceback stuck. pc=", hex(frame.pc), " sp=", hex(frame.sp), "\n")
-			tracebackHexdump(itr.stack, &frame, frame.sp)
+			print("runtime: traceback stuck. pc=", hex(itr.frame.pc), " sp=", hex(itr.frame.sp), "\n")
+			tracebackHexdump(itr.stack, &itr.frame, itr.frame.sp)
 			throw("traceback stuck")
 		}
 
 		// Unwind to next frame.
-		frame.fn = flr
-		frame.pc = frame.lr
-		frame.lr = 0
-		frame.sp = frame.fp
-		frame.fp = 0
+		setFuncInfoNoWB(&itr.frame.fn, flr)
+		itr.frame.pc = itr.frame.lr
+		itr.frame.lr = 0
+		itr.frame.sp = itr.frame.fp
+		itr.frame.fp = 0
 
 		// On link register architectures, sighandler saves the LR on stack
 		// before faking a call.
 		if usesLR && injectedCall {
-			x := *(*uintptr)(unsafe.Pointer(frame.sp))
-			frame.sp += alignUp(sys.MinFrameSize, sys.StackAlign)
-			f = findfunc(frame.pc)
-			frame.fn = f
+			x := *(*uintptr)(unsafe.Pointer(itr.frame.sp))
+			itr.frame.sp += alignUp(sys.MinFrameSize, sys.StackAlign)
+			f = findfunc(itr.frame.pc)
+			setFuncInfoNoWB(&itr.frame.fn, f)
 			if !f.valid() {
-				frame.pc = x
-			} else if funcspdelta(f, frame.pc, &cache) == 0 {
-				frame.lr = x
+				itr.frame.pc = x
+			} else if funcspdelta(f, itr.frame.pc, &cache) == 0 {
+				itr.frame.lr = x
 			}
 		}
 	}
@@ -578,8 +577,8 @@ func (itr *tracebackIterator) Gentraceback() int {
 	// At other times, such as when gathering a stack for a profiling signal
 	// or when printing a traceback during a crash, everything may not be
 	// stopped nicely, and the stack walk may not be able to complete.
-	if itr.callback != nil && n < itr.max && frame.sp != itr.gp.stktopsp {
-		print("runtime: g", itr.gp.goid, ": frame.sp=", hex(frame.sp), " top=", hex(itr.gp.stktopsp), "\n")
+	if itr.callback != nil && n < itr.max && itr.frame.sp != itr.gp.stktopsp {
+		print("runtime: g", itr.gp.goid, ": frame.sp=", hex(itr.frame.sp), " top=", hex(itr.gp.stktopsp), "\n")
 		print("\tstack=[", hex(itr.gp.stack.lo), "-", hex(itr.gp.stack.hi), "] n=", n, " max=", itr.max, "\n")
 		throw("traceback did not unwind completely")
 	}
