@@ -11,11 +11,19 @@ import (
 )
 
 func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
-	var itr tracebackIterator
+	itr := tracebackIterator{}
 	return itr.Gentraceback(pc0, sp0, lr0, gp, skip, pcbuf, max, callback, v, flags)
 }
 
 type tracebackIterator struct {
+	pc0, sp0, lr0 uintptr
+	gp            *g
+	skip          int
+	pcbuf         *uintptr
+	max           int
+	callback      func(*stkframe, unsafe.Pointer) bool
+	v             unsafe.Pointer
+	flags         uint
 }
 
 func (itr *tracebackIterator) Gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
