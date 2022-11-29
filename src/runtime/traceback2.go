@@ -41,6 +41,7 @@ type tracebackIterator struct {
 	nprint   int
 	frame    stkframe
 	waspanic bool
+	cgoCtxt  []uintptr
 }
 
 func (itr *tracebackIterator) init() {
@@ -91,12 +92,12 @@ func (itr *tracebackIterator) init() {
 	}
 
 	itr.waspanic = false
+	setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 }
 
 func (itr *tracebackIterator) Gentraceback() int {
 	frame := itr.frame
 
-	cgoCtxt := itr.gp.cgoCtxt
 	stack := itr.gp.stack
 	printing := itr.pcbuf == nil && itr.callback == nil
 
@@ -197,7 +198,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					frame.lr = itr.gp.sched.lr
 					frame.sp = itr.gp.sched.sp
 					stack = itr.gp.stack
-					cgoCtxt = itr.gp.cgoCtxt
+					setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 				case funcID_systemstack:
 					// systemstack returns normally, so just follow the
 					// stack transition.
@@ -215,7 +216,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					setGNoWB(&itr.gp, itr.gp.m.curg)
 					frame.sp = itr.gp.sched.sp
 					stack = itr.gp.stack
-					cgoCtxt = itr.gp.cgoCtxt
+					setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 					flag &^= funcFlag_SPWRITE
 				}
 			}
@@ -479,9 +480,9 @@ func (itr *tracebackIterator) Gentraceback() int {
 		}
 		n++
 
-		if f.funcID == funcID_cgocallback && len(cgoCtxt) > 0 {
-			ctxt := cgoCtxt[len(cgoCtxt)-1]
-			cgoCtxt = cgoCtxt[:len(cgoCtxt)-1]
+		if f.funcID == funcID_cgocallback && len(itr.cgoCtxt) > 0 {
+			ctxt := itr.cgoCtxt[len(itr.cgoCtxt)-1]
+			itr.cgoCtxt = itr.cgoCtxt[:len(itr.cgoCtxt)-1]
 
 			// skip only applies to Go frames.
 			// callback != nil only used when we only care
@@ -580,4 +581,12 @@ func (itr *tracebackIterator) Gentraceback() int {
 
 	return n
 
+}
+
+// setNoWB performs dst = &src without a write barrier.
+//
+//go:nosplit
+//go:nowritebarrier
+func setNoWB[T any](dst *T, src T) {
+	*(*uintptr)(unsafe.Pointer(dst)) = uintptr(unsafe.Pointer(&src))
 }
