@@ -37,7 +37,8 @@ type tracebackIterator struct {
 	v             unsafe.Pointer
 	flags         uint
 
-	level int32
+	level  int32
+	nprint int
 }
 
 func (itr *tracebackIterator) init() {
@@ -79,11 +80,10 @@ func (itr *tracebackIterator) init() {
 			}
 		}
 	}
+	itr.nprint = 0
 }
 
 func (itr *tracebackIterator) Gentraceback() int {
-
-	nprint := 0
 	var frame stkframe
 	frame.pc = itr.pc0
 	frame.sp = itr.sp0
@@ -434,19 +434,19 @@ func (itr *tracebackIterator) Gentraceback() int {
 					inlFunc.funcID = inltree[ix].funcID
 					inlFunc.startLine = inltree[ix].startLine
 
-					if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(inlFuncInfo, itr.gp, nprint == 0, inlFuncInfo.funcID, lastFuncID) {
+					if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(inlFuncInfo, itr.gp, itr.nprint == 0, inlFuncInfo.funcID, lastFuncID) {
 						name := funcname(inlFuncInfo)
 						file, line := funcline(f, tracepc)
 						print(name, "(...)\n")
 						print("\t", file, ":", line, "\n")
-						nprint++
+						itr.nprint++
 					}
 					lastFuncID = inltree[ix].funcID
 					// Back up to an instruction in the "caller".
 					tracepc = frame.fn.entry() + uintptr(inltree[ix].parentPc)
 				}
 			}
-			if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(f, itr.gp, nprint == 0, f.funcID, lastFuncID) {
+			if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(f, itr.gp, itr.nprint == 0, f.funcID, lastFuncID) {
 				// Print during crash.
 				//	main(0x1, 0x2, 0x3)
 				//		/home/rsc/go/src/runtime/x.go:23 +0xf
@@ -468,7 +468,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					print(" fp=", hex(frame.fp), " sp=", hex(frame.sp), " pc=", hex(frame.pc))
 				}
 				print("\n")
-				nprint++
+				itr.nprint++
 			}
 			lastFuncID = f.funcID
 		}
@@ -524,7 +524,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 	}
 
 	if printing {
-		n = nprint
+		n = itr.nprint
 	}
 
 	// Note that panic != nil is okay here: there can be leftover panics,
