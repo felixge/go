@@ -39,14 +39,15 @@ type tracebackIterator struct {
 	v             unsafe.Pointer
 	flags         uint
 
-	level    int32
-	nprint   int
-	frame    stkframe
-	waspanic bool
-	cgoCtxt  []uintptr
-	stack    stack
-	printing bool
-	cache    pcvalueCache
+	level      int32
+	nprint     int
+	frame      stkframe
+	waspanic   bool
+	cgoCtxt    []uintptr
+	stack      stack
+	printing   bool
+	cache      pcvalueCache
+	lastFuncID funcID
 }
 
 func (itr *tracebackIterator) init() bool {
@@ -139,13 +140,14 @@ func (itr *tracebackIterator) init() bool {
 		return false
 	}
 	setFuncInfoNoWB(&itr.frame.fn, f)
+
+	itr.lastFuncID = funcID_normal
+
 	return true
 }
 
 func (itr *tracebackIterator) Gentraceback() int {
 	f := itr.frame.fn
-
-	lastFuncID := funcID_normal
 	n := 0
 	for n < itr.max {
 		// Typically:
@@ -386,7 +388,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					if ix < 0 {
 						break
 					}
-					if inltree[ix].funcID == funcID_wrapper && elideWrapperCalling(lastFuncID) {
+					if inltree[ix].funcID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
 						// ignore wrappers
 					} else if itr.skip > 0 {
 						itr.skip--
@@ -394,14 +396,14 @@ func (itr *tracebackIterator) Gentraceback() int {
 						(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[n] = pc
 						n++
 					}
-					lastFuncID = inltree[ix].funcID
+					itr.lastFuncID = inltree[ix].funcID
 					// Back up to an instruction in the "caller".
 					tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
 					pc = tracepc + 1
 				}
 			}
 			// Record the main frame.
-			if f.funcID == funcID_wrapper && elideWrapperCalling(lastFuncID) {
+			if f.funcID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
 				// Ignore wrapper functions (except when they trigger panics).
 			} else if itr.skip > 0 {
 				itr.skip--
@@ -409,7 +411,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 				(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[n] = pc
 				n++
 			}
-			lastFuncID = f.funcID
+			itr.lastFuncID = f.funcID
 			n-- // offset n++ below
 		}
 
@@ -443,19 +445,19 @@ func (itr *tracebackIterator) Gentraceback() int {
 					inlFunc.funcID = inltree[ix].funcID
 					inlFunc.startLine = inltree[ix].startLine
 
-					if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(inlFuncInfo, itr.gp, itr.nprint == 0, inlFuncInfo.funcID, lastFuncID) {
+					if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(inlFuncInfo, itr.gp, itr.nprint == 0, inlFuncInfo.funcID, itr.lastFuncID) {
 						name := funcname(inlFuncInfo)
 						file, line := funcline(f, tracepc)
 						print(name, "(...)\n")
 						print("\t", file, ":", line, "\n")
 						itr.nprint++
 					}
-					lastFuncID = inltree[ix].funcID
+					itr.lastFuncID = inltree[ix].funcID
 					// Back up to an instruction in the "caller".
 					tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
 				}
 			}
-			if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(f, itr.gp, itr.nprint == 0, f.funcID, lastFuncID) {
+			if (itr.flags&_TraceRuntimeFrames) != 0 || showframe(f, itr.gp, itr.nprint == 0, f.funcID, itr.lastFuncID) {
 				// Print during crash.
 				//	main(0x1, 0x2, 0x3)
 				//		/home/rsc/go/src/runtime/x.go:23 +0xf
@@ -479,7 +481,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 				print("\n")
 				itr.nprint++
 			}
-			lastFuncID = f.funcID
+			itr.lastFuncID = f.funcID
 		}
 		n++
 
