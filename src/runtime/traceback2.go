@@ -46,6 +46,7 @@ type tracebackIterator struct {
 	cgoCtxt  []uintptr
 	stack    stack
 	printing bool
+	cache    pcvalueCache
 }
 
 func (itr *tracebackIterator) init() bool {
@@ -144,8 +145,6 @@ func (itr *tracebackIterator) init() bool {
 func (itr *tracebackIterator) Gentraceback() int {
 	f := itr.frame.fn
 
-	var cache pcvalueCache
-
 	lastFuncID := funcID_normal
 	n := 0
 	for n < itr.max {
@@ -206,7 +205,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 				case funcID_systemstack:
 					// systemstack returns normally, so just follow the
 					// stack transition.
-					if usesLR && funcspdelta(f, itr.frame.pc, &cache) == 0 {
+					if usesLR && funcspdelta(f, itr.frame.pc, &itr.cache) == 0 {
 						// We're at the function prologue and the stack
 						// switch hasn't happened, or epilogue where we're
 						// about to return. Just unwind normally.
@@ -224,7 +223,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 					flag &^= funcFlag_SPWRITE
 				}
 			}
-			itr.frame.fp = itr.frame.sp + uintptr(funcspdelta(f, itr.frame.pc, &cache))
+			itr.frame.fp = itr.frame.sp + uintptr(funcspdelta(f, itr.frame.pc, &itr.cache))
 			if !usesLR {
 				// On x86, call instruction pushes return PC before entering new function.
 				itr.frame.fp += goarch.PtrSize
@@ -383,7 +382,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 			if inldata := funcdata(f, _FUNCDATA_InlTree); inldata != nil {
 				inltree := (*[1 << 20]inlinedCall)(inldata)
 				for {
-					ix := pcdatavalue(f, _PCDATA_InlTreeIndex, tracepc, &cache)
+					ix := pcdatavalue(f, _PCDATA_InlTreeIndex, tracepc, &itr.cache)
 					if ix < 0 {
 						break
 					}
@@ -527,7 +526,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 			setFuncInfoNoWB(&itr.frame.fn, f)
 			if !f.valid() {
 				itr.frame.pc = x
-			} else if funcspdelta(f, itr.frame.pc, &cache) == 0 {
+			} else if funcspdelta(f, itr.frame.pc, &itr.cache) == 0 {
 				itr.frame.lr = x
 			}
 		}
