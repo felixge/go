@@ -12,18 +12,18 @@ import (
 
 func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	itr := tracebackIterator{
-		pc0: pc0,
-		sp0: sp0,
-		lr0: lr0,
-		gp:  gp,
-		// skip:     skip,
+		pc0:  pc0,
+		sp0:  sp0,
+		lr0:  lr0,
+		gp:   gp,
+		skip: skip,
 		// pcbuf:    pcbuf,
 		// max:      max,
 		// callback: callback,
 		// v:        v,
 		// flags:    flags,
 	}
-	return itr.Gentraceback(skip, pcbuf, max, callback, v, flags)
+	return itr.Gentraceback(pcbuf, max, callback, v, flags)
 }
 
 type tracebackIterator struct {
@@ -37,8 +37,8 @@ type tracebackIterator struct {
 	flags         uint
 }
 
-func (itr *tracebackIterator) Gentraceback(skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
-	if skip > 0 && callback != nil {
+func (itr *tracebackIterator) Gentraceback(pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
+	if itr.skip > 0 && callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
 
@@ -373,8 +373,8 @@ func (itr *tracebackIterator) Gentraceback(skip int, pcbuf *uintptr, max int, ca
 					}
 					if inltree[ix].funcID == funcID_wrapper && elideWrapperCalling(lastFuncID) {
 						// ignore wrappers
-					} else if skip > 0 {
-						skip--
+					} else if itr.skip > 0 {
+						itr.skip--
 					} else if n < max {
 						(*[1 << 20]uintptr)(unsafe.Pointer(pcbuf))[n] = pc
 						n++
@@ -388,8 +388,8 @@ func (itr *tracebackIterator) Gentraceback(skip int, pcbuf *uintptr, max int, ca
 			// Record the main frame.
 			if f.funcID == funcID_wrapper && elideWrapperCalling(lastFuncID) {
 				// Ignore wrapper functions (except when they trigger panics).
-			} else if skip > 0 {
-				skip--
+			} else if itr.skip > 0 {
+				itr.skip--
 			} else if n < max {
 				(*[1 << 20]uintptr)(unsafe.Pointer(pcbuf))[n] = pc
 				n++
@@ -475,7 +475,7 @@ func (itr *tracebackIterator) Gentraceback(skip int, pcbuf *uintptr, max int, ca
 			// skip only applies to Go frames.
 			// callback != nil only used when we only care
 			// about Go frames.
-			if skip == 0 && callback == nil {
+			if itr.skip == 0 && callback == nil {
 				n = tracebackCgoContext(pcbuf, printing, ctxt, n, max)
 			}
 		}
