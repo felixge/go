@@ -25,7 +25,9 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 	}
 	if !itr.init() {
 		return 0
-	} else if !itr.Gentraceback() {
+	}
+	itr.Gentraceback()
+	if itr.callbackAbort {
 		return itr.n
 	}
 
@@ -92,16 +94,17 @@ type tracebackIterator struct {
 	v             unsafe.Pointer
 	flags         uint
 
-	level      int32
-	nprint     int
-	frame      stkframe
-	waspanic   bool
-	cgoCtxt    []uintptr
-	stack      stack
-	printing   bool
-	cache      pcvalueCache
-	lastFuncID funcID
-	n          int
+	level         int32
+	nprint        int
+	frame         stkframe
+	waspanic      bool
+	cgoCtxt       []uintptr
+	stack         stack
+	printing      bool
+	cache         pcvalueCache
+	lastFuncID    funcID
+	n             int
+	callbackAbort bool
 }
 
 func (itr *tracebackIterator) init() bool {
@@ -200,7 +203,7 @@ func (itr *tracebackIterator) init() bool {
 	return true
 }
 
-func (itr *tracebackIterator) Gentraceback() bool {
+func (itr *tracebackIterator) Gentraceback() {
 	f := itr.frame.fn
 	for itr.n < itr.max {
 		// Typically:
@@ -408,7 +411,8 @@ func (itr *tracebackIterator) Gentraceback() bool {
 
 		if itr.callback != nil {
 			if !itr.callback((*stkframe)(noescape(unsafe.Pointer(&itr.frame))), noescape(itr.v)) {
-				return false
+				itr.callbackAbort = true
+				return
 			}
 		}
 
@@ -586,7 +590,6 @@ func (itr *tracebackIterator) Gentraceback() bool {
 			}
 		}
 	}
-	return true
 }
 
 // setNoWB performs *dst = src without a write barrier.
