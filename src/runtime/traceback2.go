@@ -43,6 +43,7 @@ type tracebackIterator struct {
 	waspanic bool
 	cgoCtxt  []uintptr
 	stack    stack
+	printing bool
 }
 
 func (itr *tracebackIterator) init() {
@@ -95,11 +96,11 @@ func (itr *tracebackIterator) init() {
 	itr.waspanic = false
 	setNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 	itr.stack = itr.gp.stack
+	itr.printing = itr.pcbuf == nil && itr.callback == nil
 }
 
 func (itr *tracebackIterator) Gentraceback() int {
 	frame := itr.frame
-	printing := itr.pcbuf == nil && itr.callback == nil
 
 	// If the PC is zero, it's likely a nil function call.
 	// Start in the caller's frame.
@@ -129,7 +130,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 
 	f := findfunc(frame.pc)
 	if !f.valid() {
-		if itr.callback != nil || printing {
+		if itr.callback != nil || itr.printing {
 			print("runtime: g ", itr.gp.goid, ": unknown pc ", hex(frame.pc), "\n")
 			tracebackHexdump(itr.stack, &frame, 0)
 		}
@@ -274,7 +275,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 				// In that context it is okay to stop early.
 				// But if callback is set, we're doing a garbage collection and must
 				// get everything, so crash loudly.
-				doPrint := printing
+				doPrint := itr.printing
 				if doPrint && itr.gp.m.incgo && f.funcID == funcID_sigpanic {
 					// We can inject sigpanic
 					// calls directly into C code,
@@ -410,7 +411,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 			n-- // offset n++ below
 		}
 
-		if printing {
+		if itr.printing {
 			// assume skip=0 for printing.
 			//
 			// Never elide wrappers if we haven't printed
@@ -488,7 +489,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 			// callback != nil only used when we only care
 			// about Go frames.
 			if itr.skip == 0 && itr.callback == nil {
-				n = tracebackCgoContext(itr.pcbuf, printing, ctxt, n, itr.max)
+				n = tracebackCgoContext(itr.pcbuf, itr.printing, ctxt, n, itr.max)
 			}
 		}
 
@@ -529,7 +530,7 @@ func (itr *tracebackIterator) Gentraceback() int {
 		}
 	}
 
-	if printing {
+	if itr.printing {
 		n = itr.nprint
 	}
 
