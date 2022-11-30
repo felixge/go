@@ -34,10 +34,6 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		}
 	}
 
-	if itr.callbackAbort {
-		return itr.n
-	}
-
 	if itr.printing {
 		itr.n = itr.nprint
 	}
@@ -100,18 +96,17 @@ type tracebackIterator struct {
 	callback      func(*stkframe, unsafe.Pointer) bool
 	flags         uint
 
-	level         int32
-	nprint        int
-	frame         stkframe
-	waspanic      bool
-	cgoCtxt       []uintptr
-	stack         stack
-	printing      bool
-	cache         pcvalueCache
-	lastFuncID    funcID
-	n             int
-	callbackAbort bool
-	currentFrame  stkframe // frame is already the next frame when Next() returns
+	level        int32
+	nprint       int
+	frame        stkframe
+	waspanic     bool
+	cgoCtxt      []uintptr
+	stack        stack
+	printing     bool
+	cache        pcvalueCache
+	lastFuncID   funcID
+	n            int
+	currentFrame stkframe // frame is already the next frame when Next() returns
 }
 
 func (itr *tracebackIterator) init() bool {
