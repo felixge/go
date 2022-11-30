@@ -11,6 +11,12 @@ import (
 )
 
 func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
+	if callback != nil && pcbuf != nil {
+		throw("unexpected: callback and pcbuf set")
+	} else if skip > 0 && callback != nil {
+		throw("gentraceback callback cannot be used with non-zero skip")
+	}
+
 	itr := tracebackIterator{
 		pc0:      pc0,
 		sp0:      sp0,
@@ -21,6 +27,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		max:      max,
 		callback: *(*func(*stkframe, unsafe.Pointer) bool)(noescape(unsafe.Pointer(&callback))),
 		flags:    flags,
+		printing: callback == nil && pcbuf == nil,
 	}
 	if !itr.init() {
 		return 0
@@ -78,7 +85,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 	// At other times, such as when gathering a stack for a profiling signal
 	// or when printing a traceback during a crash, everything may not be
 	// stopped nicely, and the stack walk may not be able to complete.
-	if itr.callback != nil && itr.n < itr.max && itr.frame.sp != itr.gp.stktopsp {
+	if callback != nil && itr.n < itr.max && itr.frame.sp != itr.gp.stktopsp {
 		print("runtime: g", itr.gp.goid, ": frame.sp=", hex(itr.frame.sp), " top=", hex(itr.gp.stktopsp), "\n")
 		print("\tstack=[", hex(itr.gp.stack.lo), "-", hex(itr.gp.stack.hi), "] n=", itr.n, " max=", itr.max, "\n")
 		throw("traceback did not unwind completely")
@@ -110,14 +117,6 @@ type tracebackIterator struct {
 }
 
 func (itr *tracebackIterator) init() bool {
-	if itr.callback != nil && itr.pcbuf != nil {
-		throw("unexpected: callback and pcbuf set")
-	}
-
-	if itr.skip > 0 && itr.callback != nil {
-		throw("gentraceback callback cannot be used with non-zero skip")
-	}
-
 	// Don't call this "g"; it's too easy get "g" and "gp" confused.
 	if ourg := getg(); ourg == itr.gp && ourg == ourg.m.curg {
 		// The starting sp has been passed in as a uintptr, and the caller may
@@ -163,7 +162,6 @@ func (itr *tracebackIterator) init() bool {
 	itr.waspanic = false
 	setSliceNoWB(&itr.cgoCtxt, itr.gp.cgoCtxt)
 	itr.stack = itr.gp.stack
-	itr.printing = itr.pcbuf == nil && itr.callback == nil
 
 	// If the PC is zero, it's likely a nil function call.
 	// Start in the caller's frame.
