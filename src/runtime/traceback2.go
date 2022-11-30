@@ -111,6 +111,10 @@ type tracebackIterator struct {
 }
 
 func (itr *tracebackIterator) init() bool {
+	if itr.callback != nil && itr.pcbuf != nil {
+		throw("unexpected: callback and pcbuf set")
+	}
+
 	if itr.skip > 0 && itr.callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
