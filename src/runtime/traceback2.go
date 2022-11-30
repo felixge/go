@@ -10,6 +10,15 @@ import (
 	"unsafe"
 )
 
+type tracebackError int
+
+const (
+	tracebackOK tracebackError = iota
+	tracebackUnknownPC
+	tracebackUnexpectedReturnPC
+	tracebackStuck
+)
+
 func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	if callback != nil && pcbuf != nil {
 		throw("unexpected: callback and pcbuf set")
@@ -17,6 +26,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
 
+	printing := callback == nil && pcbuf == nil
 	itr := tracebackIterator{
 		pc0:      pc0,
 		sp0:      sp0,
@@ -27,10 +37,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		max:      max,
 		callback: *(*func(*stkframe, unsafe.Pointer) bool)(noescape(unsafe.Pointer(&callback))),
 		flags:    flags,
-		printing: callback == nil && pcbuf == nil,
-	}
-	if !itr.init() {
-		return 0
+		printing: printing,
 	}
 
 	for itr.Next() {
@@ -39,6 +46,19 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 				return itr.n
 			}
 		}
+	}
+
+	switch itr.Error() {
+	case tracebackUnknownPC:
+		if callback != nil || printing {
+			// TODO(fg) don't access itr state like this?
+			print("runtime: g ", itr.gp.goid, ": unknown pc ", hex(itr.frame.pc), "\n")
+			tracebackHexdump(itr.stack, &itr.frame, 0)
+		}
+		if callback != nil {
+			throw("unknown pc")
+		}
+		return 0 // tracebackUnknownPC happens in init()
 	}
 
 	if itr.printing {
@@ -103,6 +123,7 @@ type tracebackIterator struct {
 	callback      func(*stkframe, unsafe.Pointer) bool
 	flags         uint
 
+	initialized  bool
 	level        int32
 	nprint       int
 	frame        stkframe
@@ -114,6 +135,7 @@ type tracebackIterator struct {
 	lastFuncID   funcID
 	n            int
 	currentFrame stkframe // frame is already the next frame when Next() returns
+	error        tracebackError
 }
 
 func (itr *tracebackIterator) init() bool {
@@ -191,13 +213,7 @@ func (itr *tracebackIterator) init() bool {
 
 	f := findfunc(itr.frame.pc)
 	if !f.valid() {
-		if itr.callback != nil || itr.printing {
-			print("runtime: g ", itr.gp.goid, ": unknown pc ", hex(itr.frame.pc), "\n")
-			tracebackHexdump(itr.stack, &itr.frame, 0)
-		}
-		if itr.callback != nil {
-			throw("unknown pc")
-		}
+		itr.error = tracebackUnknownPC
 		return false
 	}
 	setFuncInfoNoWB(&itr.frame.fn, f)
@@ -208,6 +224,15 @@ func (itr *tracebackIterator) init() bool {
 }
 
 func (itr *tracebackIterator) Next() bool {
+	if !itr.initialized {
+		itr.initialized = true
+		if !itr.init() {
+			return false
+		}
+	}
+	if itr.error != 0 {
+		return false
+	}
 	if itr.n >= itr.max {
 		return false
 	}
@@ -603,6 +628,10 @@ func (itr *tracebackIterator) Next() bool {
 
 func (itr *tracebackIterator) Frame() *stkframe {
 	return &itr.currentFrame
+}
+
+func (itr *tracebackIterator) Error() tracebackError {
+	return itr.error
 }
 
 // setNoWB performs *dst = src without a write barrier.
