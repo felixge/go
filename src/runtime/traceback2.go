@@ -14,6 +14,7 @@ type tracebackError int
 
 const (
 	tracebackOK tracebackError = iota
+	tracebackOwnStack
 	tracebackUnknownPC
 	tracebackUnexpectedReturnPC
 	tracebackStuck
@@ -49,6 +50,8 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 	}
 
 	switch itr.Error() {
+	case tracebackOwnStack:
+		throw("gentraceback cannot trace user goroutine on its own stack")
 	case tracebackUnknownPC:
 		if callback != nil || printing {
 			// TODO(fg) don't access itr state like this?
@@ -154,7 +157,8 @@ func (itr *tracebackIterator) init() bool {
 		// accepts an sp for the current goroutine (typically obtained by
 		// calling getcallersp) must not run on that goroutine's stack but
 		// instead on the g0 stack.
-		throw("gentraceback cannot trace user goroutine on its own stack")
+		itr.error = tracebackOwnStack
+		return false
 	}
 	itr.level, _, _ = gotraceback()
 
