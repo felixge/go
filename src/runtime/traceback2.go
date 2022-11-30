@@ -211,14 +211,13 @@ func (itr *tracebackIterator) Next() bool {
 		return false
 	}
 
-	f := itr.frame.fn
 	// Typically:
 	//	pc is the PC of the running function.
 	//	sp is the stack pointer at that program counter.
 	//	fp is the frame pointer (caller's stack pointer) at that program counter, or nil if unknown.
 	//	stk is the stack containing sp.
 	//	The caller's program counter is lr, unless lr is zero, in which case it is *(uintptr*)sp.
-	f = itr.frame.fn
+	f := itr.frame.fn
 	if f.pcsp == 0 {
 		// No frame information, must be external function, like race support.
 		// See golang.org/issue/13568.
