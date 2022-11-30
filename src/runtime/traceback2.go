@@ -20,7 +20,6 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		pcbuf:    pcbuf,
 		max:      max,
 		callback: *(*func(*stkframe, unsafe.Pointer) bool)(noescape(unsafe.Pointer(&callback))),
-		v:        v,
 		flags:    flags,
 	}
 	if !itr.init() {
@@ -28,6 +27,11 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 	}
 
 	for itr.Next() {
+		if callback != nil {
+			if !callback((*stkframe)(noescape(unsafe.Pointer(itr.Frame()))), v) {
+				return itr.n
+			}
+		}
 	}
 
 	if itr.callbackAbort {
@@ -94,7 +98,6 @@ type tracebackIterator struct {
 	pcbuf         *uintptr
 	max           int
 	callback      func(*stkframe, unsafe.Pointer) bool
-	v             unsafe.Pointer
 	flags         uint
 
 	level         int32
@@ -108,6 +111,7 @@ type tracebackIterator struct {
 	lastFuncID    funcID
 	n             int
 	callbackAbort bool
+	currentFrame  stkframe // frame is already the next frame when Next() returns
 }
 
 func (itr *tracebackIterator) init() bool {
@@ -418,12 +422,15 @@ func (itr *tracebackIterator) Next() bool {
 		}
 	}
 
-	if itr.callback != nil {
-		if !itr.callback((*stkframe)(noescape(unsafe.Pointer(&itr.frame))), noescape(itr.v)) {
-			itr.callbackAbort = true
-			return false
-		}
-	}
+	// TODO(fg) remove this hack
+	setFuncInfoNoWB(&itr.currentFrame.fn, itr.frame.fn)
+	itr.currentFrame.pc = itr.frame.pc
+	itr.currentFrame.continpc = itr.frame.continpc
+	itr.currentFrame.lr = itr.frame.lr
+	itr.currentFrame.sp = itr.frame.sp
+	itr.currentFrame.fp = itr.frame.fp
+	itr.currentFrame.varp = itr.frame.varp
+	itr.currentFrame.argp = itr.frame.argp
 
 	if itr.pcbuf != nil {
 		pc := itr.frame.pc
@@ -599,6 +606,10 @@ func (itr *tracebackIterator) Next() bool {
 		}
 	}
 	return itr.n < itr.max
+}
+
+func (itr *tracebackIterator) Frame() *stkframe {
+	return &itr.currentFrame
 }
 
 // setNoWB performs *dst = src without a write barrier.
