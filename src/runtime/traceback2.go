@@ -36,7 +36,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		skip:     skip,
 		pcbuf:    pcbuf,
 		max:      max,
-		callback: *(*func(*stkframe, unsafe.Pointer) bool)(noescape(unsafe.Pointer(&callback))),
+		callback: callback != nil,
 		flags:    flags,
 		printing: printing,
 	}
@@ -123,7 +123,7 @@ type tracebackIterator struct {
 	skip          int
 	pcbuf         *uintptr
 	max           int
-	callback      func(*stkframe, unsafe.Pointer) bool
+	callback      bool
 	flags         uint
 
 	initialized  bool
@@ -327,7 +327,7 @@ func (itr *tracebackIterator) Next() bool {
 		// This function marks the top of the stack. Stop the traceback.
 		itr.frame.lr = 0
 		flr = funcInfo{}
-	} else if flag&funcFlag_SPWRITE != 0 && (itr.callback == nil || itr.n > 0) {
+	} else if flag&funcFlag_SPWRITE != 0 && (!itr.callback || itr.n > 0) {
 		// The function we are in does a write to SP that we don't know
 		// how to encode in the spdelta table. Examples include context
 		// switch routines like runtime.gogo but also any code that switches
@@ -345,7 +345,7 @@ func (itr *tracebackIterator) Next() bool {
 		// So for GC stack traversal we leave things alone (this if body does not execute for n == 0)
 		// at the bottom frame of the stack. But farther up the stack we'd better not
 		// find any.
-		if itr.callback != nil {
+		if itr.callback {
 			println("traceback: unexpected SPWRITE function", funcname(f))
 			throw("traceback")
 		}
@@ -378,11 +378,11 @@ func (itr *tracebackIterator) Next() bool {
 				// return PC. Don't complain.
 				doPrint = false
 			}
-			if itr.callback != nil || doPrint {
+			if itr.callback || doPrint {
 				print("runtime: g ", itr.gp.goid, ": unexpected return pc for ", funcname(f), " called from ", hex(itr.frame.lr), "\n")
 				tracebackHexdump(itr.stack, &itr.frame, lrPtr)
 			}
-			if itr.callback != nil {
+			if itr.callback {
 				throw("unknown caller pc")
 			}
 		}
@@ -587,7 +587,7 @@ func (itr *tracebackIterator) Next() bool {
 		// skip only applies to Go frames.
 		// callback != nil only used when we only care
 		// about Go frames.
-		if itr.skip == 0 && itr.callback == nil {
+		if itr.skip == 0 && !itr.callback {
 			itr.n = tracebackCgoContext(itr.pcbuf, itr.printing, ctxt, itr.n, itr.max)
 		}
 	}
