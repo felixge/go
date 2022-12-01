@@ -16,6 +16,7 @@ const (
 	tracebackOK tracebackError = iota
 	tracebackOwnStack
 	tracebackUnknownPC
+	tracebackUnexpectedSPWrite
 	tracebackUnexpectedReturnPC
 	tracebackStuck
 )
@@ -41,12 +42,14 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		printing: printing,
 	}
 
+	var n int
 	for itr.Next() {
 		if callback != nil {
 			if !callback((*stkframe)(noescape(unsafe.Pointer(itr.Frame()))), v) {
-				return itr.n
+				return n
 			}
 		}
+		n++
 	}
 
 	switch itr.Error() {
@@ -62,6 +65,11 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 			throw("unknown pc")
 		}
 		return 0 // tracebackUnknownPC happens in init()
+	case tracebackUnexpectedSPWrite:
+		if callback != nil && n > 1 {
+			println("traceback: unexpected SPWRITE function", funcname(itr.frame.fn))
+			throw("traceback")
+		}
 	}
 
 	if itr.printing {
@@ -346,8 +354,8 @@ func (itr *tracebackIterator) Next() bool {
 		// at the bottom frame of the stack. But farther up the stack we'd better not
 		// find any.
 		if itr.callback {
-			println("traceback: unexpected SPWRITE function", funcname(f))
-			throw("traceback")
+			itr.error = tracebackUnexpectedSPWrite
+			return false
 		}
 		itr.frame.lr = 0
 		flr = funcInfo{}
