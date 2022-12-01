@@ -10,10 +10,18 @@ import (
 	"unsafe"
 )
 
+type tracebackState int
+
+const (
+	tracebackInit tracebackState = iota
+	tracebackNext
+	tracebackDone
+)
+
 type tracebackError int
 
 const (
-	tracebackOK tracebackError = iota
+	tracebackNoError tracebackError = iota
 	tracebackOwnStack
 	tracebackUnknownPC
 	tracebackUnexpectedSPWrite
@@ -134,6 +142,7 @@ type tracebackIterator struct {
 	callback      bool
 	flags         uint
 
+	state        tracebackState
 	initialized  bool
 	level        int32
 	nprint       int
@@ -149,7 +158,7 @@ type tracebackIterator struct {
 	error        tracebackError
 }
 
-func (itr *tracebackIterator) init() bool {
+func (itr *tracebackIterator) init() tracebackError {
 	// Don't call this "g"; it's too easy get "g" and "gp" confused.
 	if ourg := getg(); ourg == itr.gp && ourg == ourg.m.curg {
 		// The starting sp has been passed in as a uintptr, and the caller may
@@ -165,8 +174,7 @@ func (itr *tracebackIterator) init() bool {
 		// accepts an sp for the current goroutine (typically obtained by
 		// calling getcallersp) must not run on that goroutine's stack but
 		// instead on the g0 stack.
-		itr.error = tracebackOwnStack
-		return false
+		return tracebackOwnStack
 	}
 	itr.level, _, _ = gotraceback()
 
@@ -225,28 +233,42 @@ func (itr *tracebackIterator) init() bool {
 
 	f := findfunc(itr.frame.pc)
 	if !f.valid() {
-		itr.error = tracebackUnknownPC
-		return false
+		return tracebackUnknownPC
 	}
 	setFuncInfoNoWB(&itr.frame.fn, f)
 
 	itr.lastFuncID = funcID_normal
 
-	return true
+	return tracebackNoError
 }
 
 func (itr *tracebackIterator) Next() bool {
-	if !itr.initialized {
-		itr.initialized = true
-		if !itr.init() {
+	for {
+		switch itr.state {
+		case tracebackDone:
 			return false
+		case tracebackInit:
+			if itr.error = itr.init(); itr.error != tracebackNoError {
+				itr.state = tracebackDone
+				return false
+			}
+			itr.state = tracebackNext
+		case tracebackNext:
+			var more bool
+			more, itr.error = itr.next()
+			if !more || itr.error != tracebackNoError {
+				itr.state = tracebackDone
+			}
+			return more
+		default:
+			throw("bug")
 		}
 	}
-	if itr.error != 0 {
-		return false
-	}
+}
+
+func (itr *tracebackIterator) next() (bool, tracebackError) {
 	if itr.n >= itr.max {
-		return false
+		return false, tracebackNoError
 	}
 
 	// Typically:
@@ -259,7 +281,7 @@ func (itr *tracebackIterator) Next() bool {
 	if f.pcsp == 0 {
 		// No frame information, must be external function, like race support.
 		// See golang.org/issue/13568.
-		return false
+		return false, tracebackNoError
 	}
 
 	// Compute function info flags.
@@ -315,7 +337,7 @@ func (itr *tracebackIterator) Next() bool {
 					// instruction opens the frame), therefore no way
 					// to check.
 					flag &^= funcFlag_SPWRITE
-					return false
+					return false, tracebackNoError
 				}
 				setGNoWB(&itr.gp, itr.gp.m.curg)
 				itr.frame.sp = itr.gp.sched.sp
@@ -354,8 +376,7 @@ func (itr *tracebackIterator) Next() bool {
 		// at the bottom frame of the stack. But farther up the stack we'd better not
 		// find any.
 		if itr.callback {
-			itr.error = tracebackUnexpectedSPWrite
-			return false
+			return false, tracebackUnexpectedSPWrite
 		}
 		itr.frame.lr = 0
 		flr = funcInfo{}
@@ -605,7 +626,7 @@ func (itr *tracebackIterator) Next() bool {
 
 	// Do not unwind past the bottom of the stack.
 	if !flr.valid() {
-		return false
+		return false, tracebackNoError
 	}
 
 	if itr.frame.pc == itr.frame.lr && itr.frame.sp == itr.frame.fp {
@@ -635,7 +656,7 @@ func (itr *tracebackIterator) Next() bool {
 			itr.frame.lr = x
 		}
 	}
-	return itr.n < itr.max
+	return itr.n < itr.max, tracebackNoError
 }
 
 func (itr *tracebackIterator) Frame() *stkframe {
