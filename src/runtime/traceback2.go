@@ -14,7 +14,7 @@ type tracebackState int
 
 const (
 	stateInit tracebackState = iota
-	statePrepareFrame
+	statePreambleFrame
 	stateBufInlineFrame
 	stateBufNormalFrame
 	statePostamble
@@ -263,14 +263,14 @@ yield:
 		case stateInit:
 			switch itr.event = itr.init(); itr.event {
 			case eventOK:
-				itr.state = statePrepareFrame
+				itr.state = statePreambleFrame
 			default:
 				itr.state = stateError
 				break yield
 			}
 
-		case statePrepareFrame:
-			switch itr.event = itr.prepareFrame(); itr.event {
+		case statePreambleFrame:
+			switch itr.event = itr.preamble(); itr.event {
 			case eventPCBufInline:
 				itr.state = stateBufInlineFrame
 			case eventBufNormal:
@@ -307,9 +307,9 @@ yield:
 			}
 
 		case statePostamble:
-			switch itr.event = itr.next(); itr.event {
+			switch itr.event = itr.postamble(); itr.event {
 			case eventOK:
-				itr.state = statePrepareFrame
+				itr.state = statePreambleFrame
 				more = true
 				break yield
 			case eventBottomOfStack, eventMaxReached:
@@ -328,7 +328,7 @@ yield:
 	return more
 }
 
-func (itr *tracebackIterator) prepareFrame() tracebackEvent {
+func (itr *tracebackIterator) preamble() tracebackEvent {
 	if itr.n >= itr.max {
 		return eventMaxReached
 	}
@@ -621,7 +621,7 @@ func (itr *tracebackIterator) normalFrame() tracebackEvent {
 	return eventOK
 }
 
-func (itr *tracebackIterator) next() tracebackEvent {
+func (itr *tracebackIterator) postamble() tracebackEvent {
 	f := itr.frame.fn
 	if itr.printing {
 		// assume skip=0 for printing.
