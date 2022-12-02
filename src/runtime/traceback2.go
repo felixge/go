@@ -36,6 +36,7 @@ const (
 	eventUnexpectedSPWrite
 	eventUnexpectedReturnPC
 	eventStuck
+	eventBottomOfStack
 )
 
 func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
@@ -256,7 +257,7 @@ func (itr *tracebackIterator) init() tracebackEvent {
 }
 
 func (itr *tracebackIterator) Next() (more bool) {
-loop:
+yield:
 	for {
 		switch itr.state {
 		case stateInit:
@@ -265,7 +266,7 @@ loop:
 				itr.state = statePrepareFrame
 			default:
 				itr.state = stateError
-				break loop
+				break yield
 			}
 		case statePrepareFrame:
 			switch itr.event = itr.prepareFrame(); itr.event {
@@ -277,7 +278,7 @@ loop:
 				itr.state = statePostamble
 			default:
 				itr.state = stateError
-				break loop
+				break yield
 			}
 		case stateBufInlineFrame:
 			switch itr.event = itr.inlineFrame(); itr.event {
@@ -287,7 +288,7 @@ loop:
 				itr.state = stateBufNormalFrame
 			default:
 				itr.state = stateError
-				break loop
+				break yield
 			}
 		case stateBufNormalFrame:
 			switch itr.event = itr.normalFrame(); itr.event {
@@ -295,18 +296,22 @@ loop:
 				itr.state = statePostamble
 			default:
 				itr.state = stateError
-				break loop
+				break yield
 			}
 		case statePostamble:
-			more = itr.next()
-			if more {
+			switch itr.event = itr.next(); itr.event {
+			case eventOK:
 				itr.state = statePrepareFrame
-			} else {
+				more = true
+				break yield
+			case eventBottomOfStack, eventMaxReached:
 				itr.state = stateDone
+			default:
+				itr.state = stateError
+				break yield
 			}
-			break loop
 		case stateDone, stateError:
-			break loop
+			break yield
 		default:
 			throw("bug")
 		}
@@ -607,7 +612,7 @@ func (itr *tracebackIterator) normalFrame() tracebackEvent {
 	return eventOK
 }
 
-func (itr *tracebackIterator) next() bool {
+func (itr *tracebackIterator) next() tracebackEvent {
 	f := itr.frame.fn
 	if itr.printing {
 		// assume skip=0 for printing.
@@ -696,7 +701,7 @@ func (itr *tracebackIterator) next() bool {
 
 	// Do not unwind past the bottom of the stack.
 	if !itr.flr.valid() {
-		return false
+		return eventBottomOfStack
 	}
 
 	if itr.frame.pc == itr.frame.lr && itr.frame.sp == itr.frame.fp {
@@ -726,7 +731,10 @@ func (itr *tracebackIterator) next() bool {
 			itr.frame.lr = x
 		}
 	}
-	return itr.n < itr.max
+	if itr.n < itr.max {
+		return eventOK
+	}
+	return eventMaxReached
 }
 
 func (itr *tracebackIterator) Frame() *stkframe {
