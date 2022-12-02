@@ -13,23 +13,29 @@ import (
 type tracebackState int
 
 const (
-	tracebackInit tracebackState = iota
-	tracebackPrepareFrame
-	tracebackBufInlineFrame
-	tracebackBufNormalFrame
-	tracebackPostamble
-	tracebackDone
+	stateInit tracebackState = iota
+	statePrepareFrame
+	stateBufInlineFrame
+	stateBufNormalFrame
+	statePostamble
+	stateDone
+	stateError
 )
 
-type tracebackError int
+type tracebackEvent int
 
 const (
-	tracebackNoError tracebackError = iota
-	tracebackOwnStack
-	tracebackUnknownPC
-	tracebackUnexpectedSPWrite
-	tracebackUnexpectedReturnPC
-	tracebackStuck
+	eventOK tracebackEvent = iota
+	eventMaxReached
+	eventNoPCSP
+	eventPCBufInline
+	eventBufNormal
+	eventNoPCBuf
+	eventOwnStack
+	eventUnknownPC
+	eventUnexpectedSPWrite
+	eventUnexpectedReturnPC
+	eventStuck
 )
 
 func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
@@ -64,9 +70,9 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 	}
 
 	switch itr.Error() {
-	case tracebackOwnStack:
+	case eventOwnStack:
 		throw("gentraceback cannot trace user goroutine on its own stack")
-	case tracebackUnknownPC:
+	case eventUnknownPC:
 		if callback != nil || printing {
 			// TODO(fg) don't access itr state like this?
 			print("runtime: g ", itr.gp.goid, ": unknown pc ", hex(itr.frame.pc), "\n")
@@ -76,7 +82,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 			throw("unknown pc")
 		}
 		return 0 // tracebackUnknownPC happens in init()
-	case tracebackUnexpectedSPWrite:
+	case eventUnexpectedSPWrite:
 		if callback != nil && n > 1 {
 			println("traceback: unexpected SPWRITE function", funcname(itr.frame.fn))
 			throw("traceback")
@@ -158,14 +164,14 @@ type tracebackIterator struct {
 	lastFuncID   funcID
 	n            int
 	currentFrame stkframe // frame is already the next frame when Next() returns
-	error        tracebackError
+	event        tracebackEvent
 	inldata      unsafe.Pointer
 	pc           uintptr
 	tracepc      uintptr
 	flr          funcInfo
 }
 
-func (itr *tracebackIterator) init() tracebackError {
+func (itr *tracebackIterator) init() tracebackEvent {
 	// Don't call this "g"; it's too easy get "g" and "gp" confused.
 	if ourg := getg(); ourg == itr.gp && ourg == ourg.m.curg {
 		// The starting sp has been passed in as a uintptr, and the caller may
@@ -181,7 +187,7 @@ func (itr *tracebackIterator) init() tracebackError {
 		// accepts an sp for the current goroutine (typically obtained by
 		// calling getcallersp) must not run on that goroutine's stack but
 		// instead on the g0 stack.
-		return tracebackOwnStack
+		return eventOwnStack
 	}
 	itr.level, _, _ = gotraceback()
 
@@ -240,49 +246,63 @@ func (itr *tracebackIterator) init() tracebackError {
 
 	f := findfunc(itr.frame.pc)
 	if !f.valid() {
-		return tracebackUnknownPC
+		return eventUnknownPC
 	}
 	setFuncInfoNoWB(&itr.frame.fn, f)
 
 	itr.lastFuncID = funcID_normal
 
-	return tracebackNoError
+	return eventOK
 }
 
-func (itr *tracebackIterator) Next() bool {
+func (itr *tracebackIterator) Next() (more bool) {
+loop:
 	for {
 		switch itr.state {
-		case tracebackInit:
-			if itr.error = itr.init(); itr.error != tracebackNoError {
-				itr.state = tracebackDone
-				return false
+		case stateInit:
+			switch itr.event = itr.init(); itr.event {
+			case eventOK:
+				itr.state = statePrepareFrame
+			default:
+				itr.state = stateError
+				break loop
 			}
-			itr.state = tracebackPrepareFrame
-		case tracebackPrepareFrame:
-			itr.state, itr.error = itr.prepareFrame()
-		case tracebackBufInlineFrame:
-			itr.state, itr.error = itr.inlineFrame()
-		case tracebackBufNormalFrame:
-			itr.state, itr.error = itr.normalFrame()
-		case tracebackPostamble:
-			more := itr.next()
+		case statePrepareFrame:
+			switch itr.event = itr.prepareFrame(); itr.event {
+			case eventPCBufInline:
+				itr.state = stateBufInlineFrame
+			case eventBufNormal:
+				itr.state = stateBufNormalFrame
+			case eventNoPCBuf:
+				itr.state = statePostamble
+			default:
+				itr.state = stateError
+				break loop
+			}
+		case stateBufInlineFrame:
+			itr.state, itr.event = itr.inlineFrame()
+		case stateBufNormalFrame:
+			itr.state, itr.event = itr.normalFrame()
+		case statePostamble:
+			more = itr.next()
 			if more {
-				itr.state = tracebackPrepareFrame
+				itr.state = statePrepareFrame
 			} else {
-				itr.state = tracebackDone
+				itr.state = stateDone
 			}
-			return more
-		case tracebackDone:
-			return false
+			break loop
+		case stateDone, stateError:
+			break loop
 		default:
 			throw("bug")
 		}
 	}
+	return more
 }
 
-func (itr *tracebackIterator) prepareFrame() (tracebackState, tracebackError) {
+func (itr *tracebackIterator) prepareFrame() tracebackEvent {
 	if itr.n >= itr.max {
-		return tracebackDone, tracebackNoError
+		return eventMaxReached
 	}
 
 	// Typically:
@@ -295,7 +315,7 @@ func (itr *tracebackIterator) prepareFrame() (tracebackState, tracebackError) {
 	if f.pcsp == 0 {
 		// No frame information, must be external function, like race support.
 		// See golang.org/issue/13568.
-		return tracebackDone, tracebackNoError
+		return eventNoPCSP
 	}
 
 	// Compute function info flags.
@@ -351,7 +371,7 @@ func (itr *tracebackIterator) prepareFrame() (tracebackState, tracebackError) {
 					// instruction opens the frame), therefore no way
 					// to check.
 					flag &^= funcFlag_SPWRITE
-					return tracebackDone, tracebackNoError
+					break
 				}
 				setGNoWB(&itr.gp, itr.gp.m.curg)
 				itr.frame.sp = itr.gp.sched.sp
@@ -389,7 +409,7 @@ func (itr *tracebackIterator) prepareFrame() (tracebackState, tracebackError) {
 		// at the bottom frame of the stack. But farther up the stack we'd better not
 		// find any.
 		if itr.callback {
-			return tracebackDone, tracebackUnexpectedSPWrite
+			return eventUnexpectedSPWrite
 		}
 		itr.frame.lr = 0
 		setFuncInfoNoWB(&itr.flr, funcInfo{})
@@ -521,22 +541,22 @@ func (itr *tracebackIterator) prepareFrame() (tracebackState, tracebackError) {
 		// If there is inlining info, record the inner frames.
 		setUPNoWb(&itr.inldata, funcdata(f, _FUNCDATA_InlTree))
 		if itr.inldata != nil {
-			return tracebackBufInlineFrame, tracebackNoError
+			return eventPCBufInline
 		}
-		return tracebackBufNormalFrame, tracebackNoError
+		return eventBufNormal
 	}
 
-	return tracebackPostamble, tracebackNoError
+	return eventNoPCBuf
 }
 
-func (itr *tracebackIterator) inlineFrame() (tracebackState, tracebackError) {
+func (itr *tracebackIterator) inlineFrame() (tracebackState, tracebackEvent) {
 	f := itr.frame.fn
 
 	inltree := (*[1 << 20]inlinedCall)(itr.inldata)
 
 	ix := pcdatavalue(f, _PCDATA_InlTreeIndex, itr.tracepc, &itr.cache)
 	if ix < 0 {
-		return tracebackBufNormalFrame, tracebackNoError
+		return stateBufNormalFrame, eventOK
 	}
 
 	if inltree[ix].funcID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
@@ -552,10 +572,10 @@ func (itr *tracebackIterator) inlineFrame() (tracebackState, tracebackError) {
 	itr.tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
 	itr.pc = itr.tracepc + 1
 
-	return tracebackBufInlineFrame, tracebackNoError
+	return stateBufInlineFrame, eventOK
 }
 
-func (itr *tracebackIterator) normalFrame() (tracebackState, tracebackError) {
+func (itr *tracebackIterator) normalFrame() (tracebackState, tracebackEvent) {
 	f := itr.frame.fn
 
 	// Record the main frame.
@@ -570,7 +590,7 @@ func (itr *tracebackIterator) normalFrame() (tracebackState, tracebackError) {
 	itr.lastFuncID = f.funcID
 	itr.n-- // offset n++ below
 
-	return tracebackPostamble, tracebackNoError
+	return statePostamble, eventOK
 }
 
 func (itr *tracebackIterator) next() bool {
@@ -699,8 +719,11 @@ func (itr *tracebackIterator) Frame() *stkframe {
 	return &itr.currentFrame
 }
 
-func (itr *tracebackIterator) Error() tracebackError {
-	return itr.error
+func (itr *tracebackIterator) Error() tracebackEvent {
+	if itr.state == stateError {
+		return itr.event
+	}
+	return 0
 }
 
 // setNoWB performs *dst = src without a write barrier.
