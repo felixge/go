@@ -268,6 +268,7 @@ yield:
 				itr.state = stateError
 				break yield
 			}
+
 		case statePrepareFrame:
 			switch itr.event = itr.prepareFrame(); itr.event {
 			case eventPCBufInline:
@@ -280,16 +281,22 @@ yield:
 				itr.state = stateError
 				break yield
 			}
+
 		case stateBufInlineFrame:
 			switch itr.event = itr.inlineFrame(); itr.event {
 			case eventPCBufInline:
 				itr.state = stateBufInlineFrame
+				more = true
+				break yield
 			case eventBufNormal:
 				itr.state = stateBufNormalFrame
+				more = true
+				break yield
 			default:
 				itr.state = stateError
 				break yield
 			}
+
 		case stateBufNormalFrame:
 			switch itr.event = itr.normalFrame(); itr.event {
 			case eventOK:
@@ -298,6 +305,7 @@ yield:
 				itr.state = stateError
 				break yield
 			}
+
 		case statePostamble:
 			switch itr.event = itr.next(); itr.event {
 			case eventOK:
@@ -310,6 +318,7 @@ yield:
 				itr.state = stateError
 				break yield
 			}
+
 		case stateDone, stateError:
 			break yield
 		default:
