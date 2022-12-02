@@ -14,7 +14,10 @@ type tracebackState int
 
 const (
 	tracebackInit tracebackState = iota
-	tracebackNext
+	tracebackPrepareFrame
+	tracebackBufInlineFrame
+	tracebackBufNormalFrame
+	tracebackPostamble
 	tracebackDone
 )
 
@@ -156,6 +159,10 @@ type tracebackIterator struct {
 	n            int
 	currentFrame stkframe // frame is already the next frame when Next() returns
 	error        tracebackError
+	inldata      unsafe.Pointer
+	pc           uintptr
+	tracepc      uintptr
+	flr          funcInfo
 }
 
 func (itr *tracebackIterator) init() tracebackError {
@@ -245,30 +252,37 @@ func (itr *tracebackIterator) init() tracebackError {
 func (itr *tracebackIterator) Next() bool {
 	for {
 		switch itr.state {
-		case tracebackDone:
-			return false
 		case tracebackInit:
 			if itr.error = itr.init(); itr.error != tracebackNoError {
 				itr.state = tracebackDone
 				return false
 			}
-			itr.state = tracebackNext
-		case tracebackNext:
-			var more bool
-			more, itr.error = itr.next()
-			if !more || itr.error != tracebackNoError {
+			itr.state = tracebackPrepareFrame
+		case tracebackPrepareFrame:
+			itr.state, itr.error = itr.prepareFrame()
+		case tracebackBufInlineFrame:
+			itr.state, itr.error = itr.inlineFrame()
+		case tracebackBufNormalFrame:
+			itr.state, itr.error = itr.normalFrame()
+		case tracebackPostamble:
+			more := itr.next()
+			if more {
+				itr.state = tracebackPrepareFrame
+			} else {
 				itr.state = tracebackDone
 			}
 			return more
+		case tracebackDone:
+			return false
 		default:
 			throw("bug")
 		}
 	}
 }
 
-func (itr *tracebackIterator) next() (bool, tracebackError) {
+func (itr *tracebackIterator) prepareFrame() (tracebackState, tracebackError) {
 	if itr.n >= itr.max {
-		return false, tracebackNoError
+		return tracebackDone, tracebackNoError
 	}
 
 	// Typically:
@@ -281,7 +295,7 @@ func (itr *tracebackIterator) next() (bool, tracebackError) {
 	if f.pcsp == 0 {
 		// No frame information, must be external function, like race support.
 		// See golang.org/issue/13568.
-		return false, tracebackNoError
+		return tracebackDone, tracebackNoError
 	}
 
 	// Compute function info flags.
@@ -337,7 +351,7 @@ func (itr *tracebackIterator) next() (bool, tracebackError) {
 					// instruction opens the frame), therefore no way
 					// to check.
 					flag &^= funcFlag_SPWRITE
-					return false, tracebackNoError
+					return tracebackDone, tracebackNoError
 				}
 				setGNoWB(&itr.gp, itr.gp.m.curg)
 				itr.frame.sp = itr.gp.sched.sp
@@ -352,11 +366,10 @@ func (itr *tracebackIterator) next() (bool, tracebackError) {
 			itr.frame.fp += goarch.PtrSize
 		}
 	}
-	var flr funcInfo
 	if flag&funcFlag_TOPFRAME != 0 {
 		// This function marks the top of the stack. Stop the traceback.
 		itr.frame.lr = 0
-		flr = funcInfo{}
+		setFuncInfoNoWB(&itr.flr, funcInfo{})
 	} else if flag&funcFlag_SPWRITE != 0 && (!itr.callback || itr.n > 0) {
 		// The function we are in does a write to SP that we don't know
 		// how to encode in the spdelta table. Examples include context
@@ -376,10 +389,10 @@ func (itr *tracebackIterator) next() (bool, tracebackError) {
 		// at the bottom frame of the stack. But farther up the stack we'd better not
 		// find any.
 		if itr.callback {
-			return false, tracebackUnexpectedSPWrite
+			return tracebackDone, tracebackUnexpectedSPWrite
 		}
 		itr.frame.lr = 0
-		flr = funcInfo{}
+		setFuncInfoNoWB(&itr.flr, funcInfo{})
 	} else {
 		var lrPtr uintptr
 		if usesLR {
@@ -393,8 +406,9 @@ func (itr *tracebackIterator) next() (bool, tracebackError) {
 				itr.frame.lr = uintptr(*(*uintptr)(unsafe.Pointer(lrPtr)))
 			}
 		}
-		flr = findfunc(itr.frame.lr)
-		if !flr.valid() {
+
+		setFuncInfoNoWB(&itr.flr, findfunc(itr.frame.lr))
+		if !itr.flr.valid() {
 			// This happens if you get a profiling interrupt at just the wrong time.
 			// In that context it is okay to stop early.
 			// But if callback is set, we're doing a garbage collection and must
@@ -484,9 +498,9 @@ func (itr *tracebackIterator) next() (bool, tracebackError) {
 	itr.currentFrame.argp = itr.frame.argp
 
 	if itr.pcbuf != nil {
-		pc := itr.frame.pc
+		itr.pc = itr.frame.pc
 		// backup to CALL instruction to read inlining info (same logic as below)
-		tracepc := pc
+		itr.tracepc = itr.pc
 		// Normally, pc is a return address. In that case, we want to look up
 		// file/line information using pc-1, because that is the pc of the
 		// call instruction (more precisely, the last byte of the call instruction).
@@ -498,47 +512,69 @@ func (itr *tracebackIterator) next() (bool, tracebackError) {
 		// See issue 34123.
 		// The pc can be at function entry when the frame is initialized without
 		// actually running code, like runtime.mstart.
-		if (itr.n == 0 && itr.flags&_TraceTrap != 0) || itr.waspanic || pc == f.entry() {
-			pc++
+		if (itr.n == 0 && itr.flags&_TraceTrap != 0) || itr.waspanic || itr.pc == f.entry() {
+			itr.pc++
 		} else {
-			tracepc--
+			itr.tracepc--
 		}
 
 		// If there is inlining info, record the inner frames.
-		if inldata := funcdata(f, _FUNCDATA_InlTree); inldata != nil {
-			inltree := (*[1 << 20]inlinedCall)(inldata)
-			for {
-				ix := pcdatavalue(f, _PCDATA_InlTreeIndex, tracepc, &itr.cache)
-				if ix < 0 {
-					break
-				}
-				if inltree[ix].funcID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
-					// ignore wrappers
-				} else if itr.skip > 0 {
-					itr.skip--
-				} else if itr.n < itr.max {
-					(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = pc
-					itr.n++
-				}
-				itr.lastFuncID = inltree[ix].funcID
-				// Back up to an instruction in the "caller".
-				tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
-				pc = tracepc + 1
-			}
+		setUPNoWb(&itr.inldata, funcdata(f, _FUNCDATA_InlTree))
+		if itr.inldata != nil {
+			return tracebackBufInlineFrame, tracebackNoError
 		}
-		// Record the main frame.
-		if f.funcID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
-			// Ignore wrapper functions (except when they trigger panics).
-		} else if itr.skip > 0 {
-			itr.skip--
-		} else if itr.n < itr.max {
-			(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = pc
-			itr.n++
-		}
-		itr.lastFuncID = f.funcID
-		itr.n-- // offset n++ below
+		return tracebackBufNormalFrame, tracebackNoError
 	}
 
+	return tracebackPostamble, tracebackNoError
+}
+
+func (itr *tracebackIterator) inlineFrame() (tracebackState, tracebackError) {
+	f := itr.frame.fn
+
+	inltree := (*[1 << 20]inlinedCall)(itr.inldata)
+
+	ix := pcdatavalue(f, _PCDATA_InlTreeIndex, itr.tracepc, &itr.cache)
+	if ix < 0 {
+		return tracebackBufNormalFrame, tracebackNoError
+	}
+
+	if inltree[ix].funcID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
+		// ignore wrappers
+	} else if itr.skip > 0 {
+		itr.skip--
+	} else if itr.n < itr.max {
+		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.pc
+		itr.n++
+	}
+	itr.lastFuncID = inltree[ix].funcID
+	// Back up to an instruction in the "caller".
+	itr.tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
+	itr.pc = itr.tracepc + 1
+
+	return tracebackBufInlineFrame, tracebackNoError
+}
+
+func (itr *tracebackIterator) normalFrame() (tracebackState, tracebackError) {
+	f := itr.frame.fn
+
+	// Record the main frame.
+	if f.funcID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
+		// Ignore wrapper functions (except when they trigger panics).
+	} else if itr.skip > 0 {
+		itr.skip--
+	} else if itr.n < itr.max {
+		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.pc
+		itr.n++
+	}
+	itr.lastFuncID = f.funcID
+	itr.n-- // offset n++ below
+
+	return tracebackPostamble, tracebackNoError
+}
+
+func (itr *tracebackIterator) next() bool {
+	f := itr.frame.fn
 	if itr.printing {
 		// assume skip=0 for printing.
 		//
@@ -625,8 +661,8 @@ func (itr *tracebackIterator) next() (bool, tracebackError) {
 	injectedCall := itr.waspanic || f.funcID == funcID_asyncPreempt || f.funcID == funcID_debugCallV2
 
 	// Do not unwind past the bottom of the stack.
-	if !flr.valid() {
-		return false, tracebackNoError
+	if !itr.flr.valid() {
+		return false
 	}
 
 	if itr.frame.pc == itr.frame.lr && itr.frame.sp == itr.frame.fp {
@@ -637,7 +673,7 @@ func (itr *tracebackIterator) next() (bool, tracebackError) {
 	}
 
 	// Unwind to next frame.
-	setFuncInfoNoWB(&itr.frame.fn, flr)
+	setFuncInfoNoWB(&itr.frame.fn, itr.flr)
 	itr.frame.pc = itr.frame.lr
 	itr.frame.lr = 0
 	itr.frame.sp = itr.frame.fp
@@ -656,7 +692,7 @@ func (itr *tracebackIterator) next() (bool, tracebackError) {
 			itr.frame.lr = x
 		}
 	}
-	return itr.n < itr.max, tracebackNoError
+	return itr.n < itr.max
 }
 
 func (itr *tracebackIterator) Frame() *stkframe {
@@ -694,4 +730,12 @@ func setSliceNoWB[T any](dst *[]T, src []T) {
 func setFuncInfoNoWB(dst *funcInfo, src funcInfo) {
 	setNoWB(&dst._func, src._func)
 	setNoWB(&dst.datap, src.datap)
+}
+
+// setUPNoWb performs *dst = src without a write barrier.
+//
+//go:nosplit
+//go:nowritebarrier
+func setUPNoWb(dst *unsafe.Pointer, src unsafe.Pointer) {
+	*(*uintptr)(unsafe.Pointer(dst)) = uintptr(src)
 }
