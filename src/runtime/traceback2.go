@@ -280,9 +280,23 @@ loop:
 				break loop
 			}
 		case stateBufInlineFrame:
-			itr.state, itr.event = itr.inlineFrame()
+			switch itr.event = itr.inlineFrame(); itr.event {
+			case eventPCBufInline:
+				itr.state = stateBufInlineFrame
+			case eventBufNormal:
+				itr.state = stateBufNormalFrame
+			default:
+				itr.state = stateError
+				break loop
+			}
 		case stateBufNormalFrame:
-			itr.state, itr.event = itr.normalFrame()
+			switch itr.event = itr.normalFrame(); itr.event {
+			case eventOK:
+				itr.state = statePostamble
+			default:
+				itr.state = stateError
+				break loop
+			}
 		case statePostamble:
 			more = itr.next()
 			if more {
@@ -549,14 +563,14 @@ func (itr *tracebackIterator) prepareFrame() tracebackEvent {
 	return eventNoPCBuf
 }
 
-func (itr *tracebackIterator) inlineFrame() (tracebackState, tracebackEvent) {
+func (itr *tracebackIterator) inlineFrame() tracebackEvent {
 	f := itr.frame.fn
 
 	inltree := (*[1 << 20]inlinedCall)(itr.inldata)
 
 	ix := pcdatavalue(f, _PCDATA_InlTreeIndex, itr.tracepc, &itr.cache)
 	if ix < 0 {
-		return stateBufNormalFrame, eventOK
+		return eventBufNormal
 	}
 
 	if inltree[ix].funcID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
@@ -572,10 +586,10 @@ func (itr *tracebackIterator) inlineFrame() (tracebackState, tracebackEvent) {
 	itr.tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
 	itr.pc = itr.tracepc + 1
 
-	return stateBufInlineFrame, eventOK
+	return eventPCBufInline
 }
 
-func (itr *tracebackIterator) normalFrame() (tracebackState, tracebackEvent) {
+func (itr *tracebackIterator) normalFrame() tracebackEvent {
 	f := itr.frame.fn
 
 	// Record the main frame.
@@ -590,7 +604,7 @@ func (itr *tracebackIterator) normalFrame() (tracebackState, tracebackEvent) {
 	itr.lastFuncID = f.funcID
 	itr.n-- // offset n++ below
 
-	return statePostamble, eventOK
+	return eventOK
 }
 
 func (itr *tracebackIterator) next() bool {
