@@ -310,8 +310,6 @@ yield:
 			switch itr.event = itr.postamble(); itr.event {
 			case eventOK:
 				itr.state = statePreambleFrame
-				foundFrame = true
-				break yield
 			case eventBottomOfStack, eventMaxReached:
 				itr.state = stateDone
 			default:
@@ -321,6 +319,7 @@ yield:
 
 		case stateDone, stateError:
 			break yield
+
 		default:
 			throw("bug")
 		}
@@ -571,10 +570,9 @@ func (itr *tracebackIterator) preamble() tracebackEvent {
 		if itr.inldata != nil {
 			return eventPCBufInline
 		}
-		return eventBufNormal
 	}
 
-	return eventNoPCBuf
+	return eventBufNormal
 }
 
 func (itr *tracebackIterator) inlineFrame() tracebackEvent {
@@ -604,6 +602,10 @@ func (itr *tracebackIterator) inlineFrame() tracebackEvent {
 }
 
 func (itr *tracebackIterator) normalFrame() tracebackEvent {
+	if itr.pcbuf == nil {
+		return eventOK
+	}
+
 	f := itr.frame.fn
 
 	// Record the main frame.
