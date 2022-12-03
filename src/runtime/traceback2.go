@@ -15,8 +15,8 @@ type tracebackState int
 const (
 	stateInit tracebackState = iota
 	statePreambleFrame
-	stateBufInlineFrame
-	stateBufNormalFrame
+	stateYieldInlineFrame
+	stateYieldNormalFrame
 	statePostamble
 	stateDone
 	stateError
@@ -256,7 +256,7 @@ func (itr *tracebackIterator) init() tracebackEvent {
 	return eventOK
 }
 
-func (itr *tracebackIterator) Next() (more bool) {
+func (itr *tracebackIterator) Next() (foundFrame bool) {
 yield:
 	for {
 		switch itr.state {
@@ -272,9 +272,9 @@ yield:
 		case statePreambleFrame:
 			switch itr.event = itr.preamble(); itr.event {
 			case eventPCBufInline:
-				itr.state = stateBufInlineFrame
+				itr.state = stateYieldInlineFrame
 			case eventBufNormal:
-				itr.state = stateBufNormalFrame
+				itr.state = stateYieldNormalFrame
 			case eventNoPCBuf:
 				itr.state = statePostamble
 			default:
@@ -282,25 +282,25 @@ yield:
 				break yield
 			}
 
-		case stateBufInlineFrame:
+		case stateYieldInlineFrame:
 			switch itr.event = itr.inlineFrame(); itr.event {
 			case eventPCBufInline:
-				itr.state = stateBufInlineFrame
-				more = true
+				itr.state = stateYieldInlineFrame
+				foundFrame = true
 				break yield
 			case eventBufNormal:
-				itr.state = stateBufNormalFrame
-				more = true
-				break yield
+				itr.state = stateYieldNormalFrame
 			default:
 				itr.state = stateError
 				break yield
 			}
 
-		case stateBufNormalFrame:
+		case stateYieldNormalFrame:
 			switch itr.event = itr.normalFrame(); itr.event {
 			case eventOK:
 				itr.state = statePostamble
+				foundFrame = true
+				break yield
 			default:
 				itr.state = stateError
 				break yield
@@ -310,7 +310,7 @@ yield:
 			switch itr.event = itr.postamble(); itr.event {
 			case eventOK:
 				itr.state = statePreambleFrame
-				more = true
+				foundFrame = true
 				break yield
 			case eventBottomOfStack, eventMaxReached:
 				itr.state = stateDone
@@ -325,7 +325,7 @@ yield:
 			throw("bug")
 		}
 	}
-	return more
+	return foundFrame
 }
 
 func (itr *tracebackIterator) preamble() tracebackEvent {
