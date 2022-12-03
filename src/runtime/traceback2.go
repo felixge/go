@@ -152,24 +152,23 @@ type tracebackIterator struct {
 	callback      bool
 	flags         uint
 
-	state        tracebackState
-	initialized  bool
-	level        int32
-	nprint       int
-	frame        stkframe
-	waspanic     bool
-	cgoCtxt      []uintptr
-	stack        stack
-	printing     bool
-	cache        pcvalueCache
-	lastFuncID   funcID
-	n            int
-	currentFrame stkframe // frame is already the next frame when Next() returns
-	event        tracebackEvent
-	inldata      unsafe.Pointer
-	pc           uintptr
-	tracepc      uintptr
-	flr          funcInfo
+	state       tracebackState
+	initialized bool
+	level       int32
+	nprint      int
+	frame       stkframe
+	waspanic    bool
+	cgoCtxt     []uintptr
+	stack       stack
+	printing    bool
+	cache       pcvalueCache
+	lastFuncID  funcID
+	n           int
+	event       tracebackEvent
+	inldata     unsafe.Pointer
+	pc          uintptr
+	tracepc     uintptr
+	flr         funcInfo
 }
 
 func (itr *tracebackIterator) init() tracebackEvent {
@@ -534,16 +533,6 @@ func (itr *tracebackIterator) preamble() tracebackEvent {
 		}
 	}
 
-	// TODO(fg) remove this hack
-	setFuncInfoNoWB(&itr.currentFrame.fn, itr.frame.fn)
-	itr.currentFrame.pc = itr.frame.pc
-	itr.currentFrame.continpc = itr.frame.continpc
-	itr.currentFrame.lr = itr.frame.lr
-	itr.currentFrame.sp = itr.frame.sp
-	itr.currentFrame.fp = itr.frame.fp
-	itr.currentFrame.varp = itr.frame.varp
-	itr.currentFrame.argp = itr.frame.argp
-
 	if itr.pcbuf != nil {
 		itr.pc = itr.frame.pc
 		// backup to CALL instruction to read inlining info (same logic as below)
@@ -749,7 +738,7 @@ func (itr *tracebackIterator) postamble() tracebackEvent {
 }
 
 func (itr *tracebackIterator) Frame() *stkframe {
-	return &itr.currentFrame
+	return &itr.frame
 }
 
 func (itr *tracebackIterator) Error() tracebackEvent {
