@@ -166,7 +166,6 @@ type tracebackIterator struct {
 	n           int
 	event       tracebackEvent
 	inldata     unsafe.Pointer
-	pc          uintptr
 	tracepc     uintptr
 	flr         funcInfo
 }
@@ -534,9 +533,8 @@ func (itr *tracebackIterator) preamble() tracebackEvent {
 	}
 
 	if itr.pcbuf != nil {
-		itr.pc = itr.frame.pc
 		// backup to CALL instruction to read inlining info (same logic as below)
-		itr.tracepc = itr.pc
+		itr.tracepc = itr.frame.pc
 		// Normally, pc is a return address. In that case, we want to look up
 		// file/line information using pc-1, because that is the pc of the
 		// call instruction (more precisely, the last byte of the call instruction).
@@ -548,8 +546,8 @@ func (itr *tracebackIterator) preamble() tracebackEvent {
 		// See issue 34123.
 		// The pc can be at function entry when the frame is initialized without
 		// actually running code, like runtime.mstart.
-		if (itr.n == 0 && itr.flags&_TraceTrap != 0) || itr.waspanic || itr.pc == f.entry() {
-			itr.pc++
+		if (itr.n == 0 && itr.flags&_TraceTrap != 0) || itr.waspanic || itr.frame.pc == f.entry() {
+			itr.frame.pc++
 		} else {
 			itr.tracepc--
 		}
@@ -579,13 +577,13 @@ func (itr *tracebackIterator) inlineFrame() tracebackEvent {
 	} else if itr.skip > 0 {
 		itr.skip--
 	} else if itr.n < itr.max {
-		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.pc
+		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.frame.pc
 		itr.n++
 	}
 	itr.lastFuncID = inltree[ix].funcID
 	// Back up to an instruction in the "caller".
 	itr.tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
-	itr.pc = itr.tracepc + 1
+	itr.frame.pc = itr.tracepc + 1
 
 	return eventPCBufInline
 }
@@ -603,7 +601,7 @@ func (itr *tracebackIterator) normalFrame() tracebackEvent {
 	} else if itr.skip > 0 {
 		itr.skip--
 	} else if itr.n < itr.max {
-		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.pc
+		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.frame.pc
 		itr.n++
 	}
 	itr.lastFuncID = f.funcID
