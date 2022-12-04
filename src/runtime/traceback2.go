@@ -170,6 +170,77 @@ type tracebackIterator struct {
 	flr         funcInfo
 }
 
+func (itr *tracebackIterator) Next() (foundFrame bool) {
+yield:
+	for {
+		switch itr.state {
+		case stateInit:
+			switch itr.event = itr.init(); itr.event {
+			case eventOK:
+				itr.state = statePreambleFrame
+			default:
+				itr.state = stateError
+				break yield
+			}
+
+		case statePreambleFrame:
+			switch itr.event = itr.preamble(); itr.event {
+			case eventPCBufInline:
+				itr.state = stateYieldInlineFrame
+			case eventBufNormal:
+				itr.state = stateYieldNormalFrame
+			case eventNoPCBuf:
+				itr.state = statePostamble
+			default:
+				itr.state = stateError
+				break yield
+			}
+
+		case stateYieldInlineFrame:
+			switch itr.event = itr.inlineFrame(); itr.event {
+			case eventPCBufInline:
+				itr.state = stateYieldInlineFrame
+				foundFrame = true
+				break yield
+			case eventBufNormal:
+				itr.state = stateYieldNormalFrame
+			default:
+				itr.state = stateError
+				break yield
+			}
+
+		case stateYieldNormalFrame:
+			switch itr.event = itr.normalFrame(); itr.event {
+			case eventOK:
+				itr.state = statePostamble
+				foundFrame = true
+				break yield
+			default:
+				itr.state = stateError
+				break yield
+			}
+
+		case statePostamble:
+			switch itr.event = itr.postamble(); itr.event {
+			case eventOK:
+				itr.state = statePreambleFrame
+			case eventBottomOfStack, eventMaxReached:
+				itr.state = stateDone
+			default:
+				itr.state = stateError
+				break yield
+			}
+
+		case stateDone, stateError:
+			break yield
+
+		default:
+			throw("bug")
+		}
+	}
+	return foundFrame
+}
+
 func (itr *tracebackIterator) init() tracebackEvent {
 	// Don't call this "g"; it's too easy get "g" and "gp" confused.
 	if ourg := getg(); ourg == itr.gp && ourg == ourg.m.curg {
@@ -252,77 +323,6 @@ func (itr *tracebackIterator) init() tracebackEvent {
 	itr.lastFuncID = funcID_normal
 
 	return eventOK
-}
-
-func (itr *tracebackIterator) Next() (foundFrame bool) {
-yield:
-	for {
-		switch itr.state {
-		case stateInit:
-			switch itr.event = itr.init(); itr.event {
-			case eventOK:
-				itr.state = statePreambleFrame
-			default:
-				itr.state = stateError
-				break yield
-			}
-
-		case statePreambleFrame:
-			switch itr.event = itr.preamble(); itr.event {
-			case eventPCBufInline:
-				itr.state = stateYieldInlineFrame
-			case eventBufNormal:
-				itr.state = stateYieldNormalFrame
-			case eventNoPCBuf:
-				itr.state = statePostamble
-			default:
-				itr.state = stateError
-				break yield
-			}
-
-		case stateYieldInlineFrame:
-			switch itr.event = itr.inlineFrame(); itr.event {
-			case eventPCBufInline:
-				itr.state = stateYieldInlineFrame
-				foundFrame = true
-				break yield
-			case eventBufNormal:
-				itr.state = stateYieldNormalFrame
-			default:
-				itr.state = stateError
-				break yield
-			}
-
-		case stateYieldNormalFrame:
-			switch itr.event = itr.normalFrame(); itr.event {
-			case eventOK:
-				itr.state = statePostamble
-				foundFrame = true
-				break yield
-			default:
-				itr.state = stateError
-				break yield
-			}
-
-		case statePostamble:
-			switch itr.event = itr.postamble(); itr.event {
-			case eventOK:
-				itr.state = statePreambleFrame
-			case eventBottomOfStack, eventMaxReached:
-				itr.state = stateDone
-			default:
-				itr.state = stateError
-				break yield
-			}
-
-		case stateDone, stateError:
-			break yield
-
-		default:
-			throw("bug")
-		}
-	}
-	return foundFrame
 }
 
 func (itr *tracebackIterator) preamble() tracebackEvent {
