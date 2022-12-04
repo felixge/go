@@ -63,7 +63,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 	var n int
 	for itr.Next() {
 		if callback != nil {
-			if !callback((*stkframe)(noescape(unsafe.Pointer(itr.Frame()))), v) {
+			if !callback((*stkframe)(noescape(unsafe.Pointer(&itr.Frame().stkframe))), v) {
 				return n
 			}
 		}
@@ -77,7 +77,7 @@ func gentraceback2(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max i
 		if callback != nil || printing {
 			// TODO(fg) don't access itr state like this?
 			print("runtime: g ", itr.gp.goid, ": unknown pc ", hex(itr.frame.pc), "\n")
-			tracebackHexdump(itr.stack, &itr.frame, 0)
+			tracebackHexdump(itr.stack, &itr.frame.stkframe, 0)
 		}
 		if callback != nil {
 			throw("unknown pc")
@@ -156,7 +156,7 @@ type tracebackIterator struct {
 	initialized bool
 	level       int32
 	nprint      int
-	frame       stkframe
+	frame       tracebackFrame
 	waspanic    bool
 	cgoCtxt     []uintptr
 	stack       stack
@@ -468,7 +468,7 @@ func (itr *tracebackIterator) preamble() tracebackEvent {
 			}
 			if itr.callback || doPrint {
 				print("runtime: g ", itr.gp.goid, ": unexpected return pc for ", funcname(f), " called from ", hex(itr.frame.lr), "\n")
-				tracebackHexdump(itr.stack, &itr.frame, lrPtr)
+				tracebackHexdump(itr.stack, &itr.frame.stkframe, lrPtr)
 			}
 			if itr.callback {
 				throw("unknown caller pc")
@@ -533,6 +533,7 @@ func (itr *tracebackIterator) preamble() tracebackEvent {
 	}
 
 	if itr.pcbuf != nil {
+		itr.frame.PC = itr.frame.pc
 		// backup to CALL instruction to read inlining info (same logic as below)
 		itr.tracepc = itr.frame.pc
 		// Normally, pc is a return address. In that case, we want to look up
@@ -547,7 +548,7 @@ func (itr *tracebackIterator) preamble() tracebackEvent {
 		// The pc can be at function entry when the frame is initialized without
 		// actually running code, like runtime.mstart.
 		if (itr.n == 0 && itr.flags&_TraceTrap != 0) || itr.waspanic || itr.frame.pc == f.entry() {
-			itr.frame.pc++
+			itr.frame.PC++
 		} else {
 			itr.tracepc--
 		}
@@ -577,13 +578,13 @@ func (itr *tracebackIterator) inlineFrame() tracebackEvent {
 	} else if itr.skip > 0 {
 		itr.skip--
 	} else if itr.n < itr.max {
-		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.frame.pc
+		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.frame.PC
 		itr.n++
 	}
 	itr.lastFuncID = inltree[ix].funcID
 	// Back up to an instruction in the "caller".
 	itr.tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
-	itr.frame.pc = itr.tracepc + 1
+	itr.frame.PC = itr.tracepc + 1
 
 	return eventPCBufInline
 }
@@ -601,7 +602,7 @@ func (itr *tracebackIterator) normalFrame() tracebackEvent {
 	} else if itr.skip > 0 {
 		itr.skip--
 	} else if itr.n < itr.max {
-		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.frame.pc
+		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.frame.PC
 		itr.n++
 	}
 	itr.lastFuncID = f.funcID
@@ -705,7 +706,7 @@ func (itr *tracebackIterator) postamble() tracebackEvent {
 	if itr.frame.pc == itr.frame.lr && itr.frame.sp == itr.frame.fp {
 		// If the next frame is identical to the current frame, we cannot make progress.
 		print("runtime: traceback stuck. pc=", hex(itr.frame.pc), " sp=", hex(itr.frame.sp), "\n")
-		tracebackHexdump(itr.stack, &itr.frame, itr.frame.sp)
+		tracebackHexdump(itr.stack, &itr.frame.stkframe, itr.frame.sp)
 		throw("traceback stuck")
 	}
 
@@ -735,7 +736,7 @@ func (itr *tracebackIterator) postamble() tracebackEvent {
 	return eventMaxReached
 }
 
-func (itr *tracebackIterator) Frame() *stkframe {
+func (itr *tracebackIterator) Frame() *tracebackFrame {
 	return &itr.frame
 }
 
@@ -744,6 +745,13 @@ func (itr *tracebackIterator) Error() tracebackEvent {
 		return itr.event
 	}
 	return 0
+}
+
+// tracebackFrame is a logical stack frame returned by the iterator.
+type tracebackFrame struct {
+	stkframe
+	PC     uintptr
+	FuncID funcID
 }
 
 // setNoWB performs *dst = src without a write barrier.
