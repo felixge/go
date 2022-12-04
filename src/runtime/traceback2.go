@@ -573,7 +573,9 @@ func (itr *tracebackIterator) inlineFrame() tracebackEvent {
 		return eventBufNormal
 	}
 
-	if inltree[ix].funcID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
+	itr.frame.FuncID = inltree[ix].funcID
+
+	if itr.frame.FuncID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
 		// ignore wrappers
 	} else if itr.skip > 0 {
 		itr.skip--
@@ -581,7 +583,7 @@ func (itr *tracebackIterator) inlineFrame() tracebackEvent {
 		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.frame.PC
 		itr.n++
 	}
-	itr.lastFuncID = inltree[ix].funcID
+	itr.lastFuncID = itr.frame.FuncID
 	// Back up to an instruction in the "caller".
 	itr.tracepc = itr.frame.fn.entry() + uintptr(inltree[ix].parentPc)
 	itr.frame.PC = itr.tracepc + 1
@@ -595,9 +597,10 @@ func (itr *tracebackIterator) normalFrame() tracebackEvent {
 	}
 
 	f := itr.frame.fn
+	itr.frame.FuncID = f.funcID
 
 	// Record the main frame.
-	if f.funcID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
+	if itr.frame.FuncID == funcID_wrapper && elideWrapperCalling(itr.lastFuncID) {
 		// Ignore wrapper functions (except when they trigger panics).
 	} else if itr.skip > 0 {
 		itr.skip--
@@ -605,7 +608,7 @@ func (itr *tracebackIterator) normalFrame() tracebackEvent {
 		(*[1 << 20]uintptr)(unsafe.Pointer(itr.pcbuf))[itr.n] = itr.frame.PC
 		itr.n++
 	}
-	itr.lastFuncID = f.funcID
+	itr.lastFuncID = itr.frame.FuncID
 	itr.n-- // offset n++ below
 
 	return eventOK
