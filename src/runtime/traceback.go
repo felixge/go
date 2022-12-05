@@ -11,6 +11,8 @@ import (
 	"unsafe"
 )
 
+var go121UseGentraceback2 = true
+
 // The code in this file implements stack trace walking for all architectures.
 // The most important fact about a given architecture is whether it uses a link register.
 // On systems with link registers, the prologue for a non-leaf function stores the
@@ -30,6 +32,10 @@ const usesLR = sys.MinFrameSize > 0
 // of logical frames to skip rather than physical frames (with inlining, a
 // PC in pcbuf can represent multiple calls).
 func gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
+	if go121UseGentraceback2 {
+		return gentraceback2(pc0, sp0, lr0, gp, skip, pcbuf, max, callback, v, flags)
+	}
+
 	if skip > 0 && callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")
 	}
