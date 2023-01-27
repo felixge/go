@@ -1523,3 +1523,7 @@ TEXT runtime·panicSliceConvert<ABIInternal>(SB),NOSPLIT,$0-16
 	MOVD	R2, R0
 	MOVD	R3, R1
 	JMP	runtime·goPanicSliceConvert<ABIInternal>(SB)
+
+TEXT ·getcallerfp<ABIInternal>(SB),NOSPLIT,$0
+	MOVD (R29), R0
+	RET

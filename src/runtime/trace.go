@@ -872,14 +872,24 @@ func traceReadCPU() {
 	}
 }
 
+var fpUnwind = true
+
 func traceStackID(mp *m, buf []uintptr, skip int) uint64 {
 	gp := getg()
 	curgp := mp.curg
 	var nstk int
-	if curgp == gp {
-		nstk = callers(skip+1, buf)
-	} else if curgp != nil {
-		nstk = gcallers(curgp, skip, buf)
+	if fpUnwind {
+		if curgp == gp {
+			nstk = fpcallers(0, skip, buf)
+		} else if curgp != nil {
+			nstk = fpcallers(curgp.sched.bp, skip-1, buf)
+		}
+	} else {
+		if curgp == gp {
+			nstk = callers(skip+1, buf)
+		} else if curgp != nil {
+			nstk = gcallers(curgp, skip, buf)
+		}
 	}
 	if nstk > 0 {
 		nstk-- // skip runtime.goexit
@@ -889,6 +899,68 @@ func traceStackID(mp *m, buf []uintptr, skip int) uint64 {
 	}
 	id := trace.stackTab.put(buf[:nstk])
 	return uint64(id)
+}
+
+// fpcallers uses frame pointer unwinding to collect a stack trace, and stores
+// it in buf. The diagram below shows the stack layout. The algorithm is to
+// simply follow the frame pointers from the leaf frame (frame 2) to the root
+// frame (frame 0) and to store the "return addr" values along the way in buf.
+// The first frame pointer is usually stored in a CPU register.
+//
+// │          ┌── ┌─────────────┐
+// │          │   │args         │
+// │          │   ├─────────────┤
+// │          │   │return addr  │
+// │  frame 0 │   ├─────────────┤
+// │          │   │frame pointer│◄─┐ value is 0 for the root frame
+// │          │   ├─────────────┤  │
+// │          │   │local values │  │
+// │          ├── ├─────────────┤  │
+// │          │   │args         │  │
+// │          │   ├─────────────┤  │
+// │          │   │return addr  │  │
+// │  frame 1 │   ├─────────────┤  │
+// │          │   │frame pointer│◄─┤
+// │          │   ├─────────────┤  │
+// │          │   │local values │  │
+// │          ├── ├─────────────┤  │
+// │          │   │args         │  │
+// │          │   ├─────────────┤  │
+// │          │   │return addr  │  │
+// │  frame 2 │   ├─────────────┤  │
+// │          │   │frame pointer├──┘ ◄─── RBP (amd64) or R29 (arm64)
+// │          │   ├─────────────┤
+// │          │   │local values │
+// ▼          └── └─────────────┘
+//
+//go:noinline
+func fpcallers(fp uintptr, skip int, buf []uintptr) int {
+	if fp == 0 {
+		// get frame pointer from CPU register
+		fp = getcallerfp()
+	}
+	i := 0
+	for i < len(buf) {
+		// return addr sits one word above the frame pointer
+		pc := *(*uintptr)(unsafe.Pointer(fp + 8))
+		if skip <= 0 {
+			buf[i] = pc
+			i++
+		} else {
+			skip--
+		}
+		lastfp := fp
+		// follow the frame pointer to the next one
+		fp = *(*uintptr)(unsafe.Pointer(fp))
+		// fp == 0 indicates that we reached the leaf frame.
+		// fp <= lastfp means that we have moved in the wrong direction, that
+		// shouldn't happen, but without this check there are crashes right now.
+		// TODO: debug these crashes
+		if fp == 0 || fp <= lastfp {
+			break
+		}
+	}
+	return i
 }
 
 // traceAcquireBuffer returns trace buffer to use and, if necessary, locks it.

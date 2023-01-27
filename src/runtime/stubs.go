@@ -345,6 +345,11 @@ func getcallerpc() uintptr
 //go:noescape
 func getcallersp() uintptr // implemented as an intrinsic on all platforms
 
+// getcallerfp returns the address of the frame pointer in the callers frame.
+
+// go:noescape
+func getcallerfp() uintptr
+
 // getclosureptr returns the pointer to the current closure.
 // getclosureptr can only be used in an assignment statement
 // at the entry of a function. Moreover, go:nosplit directive
