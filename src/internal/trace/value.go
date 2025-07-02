@@ -58,7 +58,7 @@ func (v Value) String() string {
 	return "Value{Bad}"
 }
 
-func uint64Value(x uint64) Value {
+func Uint64Value(x uint64) Value {
 	return Value{kind: ValueUint64, scalar: x}
 }
 
