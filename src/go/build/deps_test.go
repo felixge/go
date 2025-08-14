@@ -739,7 +739,7 @@ var depsRules = `
 	FMT, internal/trace/version, io, sort, encoding/binary
 	< internal/trace/internal/tracev1;
 
-	FMT, encoding/binary, internal/trace/version, internal/trace/internal/tracev1, container/heap, math/rand
+	FMT, encoding/binary, internal/trace/version, internal/trace/internal/tracev1, container/heap, math/rand, regexp
 	< internal/trace;
 
 	regexp, internal/trace, internal/trace/raw, internal/txtar
