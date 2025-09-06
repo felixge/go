@@ -23,6 +23,8 @@ type profMapEntry struct {
 	stk      []uintptr
 	tag      unsafe.Pointer
 	count    int64
+	ticks    []int64
+	tags     []unsafe.Pointer
 }
 
 func (m *profMap) lookup(stk []uint64, tag unsafe.Pointer) *profMapEntry {
