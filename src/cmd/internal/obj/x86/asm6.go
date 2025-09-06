@@ -2116,6 +2116,11 @@ func span6(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 		c = 0
 		var pPrev *obj.Prog
 		nops = nops[:0]
+		// TODO(fg) adding sleds to the runtime throws bad instruction or other
+		// errors, but I'm not 100% sure yet why.
+		if ctxt.Pkgpath != "runtime" {
+			c = xraySled(s, c, 9)
+		}
 		for p := s.Func().Text; p != nil; p = p.Link {
 			c0 := c
 			c = pjc.padJump(ctxt, s, p, c)
@@ -2255,6 +2260,33 @@ func span6(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
 			jt.Sym.WriteAddr(ctxt, int64(i)*8, 8, s, p.Pc)
 		}
 	}
+}
+
+func xraySled(s *obj.LSym, c int32, nops int32) int32 {
+	/*
+		xraySled adds a jmp instruction that skips over a certain amount of nop
+		instruction bytes that are added after it. An example of this can be seen
+		below.
+
+		This is inspired by llvm's xray function hooking framework:
+		https://github.com/llvm/llvm-project/blob/13a442ca494dcd177e8ea134e4f713c90f71bd42/compiler-rt/lib/xray/xray_x86_64.cpp#L123
+
+		000000000108b640 <_main.myFunc>:
+		 108b640: eb 09                        	jmp	0x108b64b <_main.myFunc+0xb>
+		 108b642: 66 0f 1f 84 00 00 00 00 00   	nopw	(%rax,%rax)
+		 108b64b: 48 01 d8                     	addq	%rbx, %rax
+		 108b64e: c3                           	retq
+		 108b64f: cc                           	int3
+	*/
+	s.Grow(int64(c) + 2)
+	s.P[c] = 0xEB
+	s.P[c+1] = byte(nops)
+	c += 2
+
+	s.Grow(int64(c) + int64(nops))
+	fillnop(s.P[c:], int(nops))
+
+	return c + nops
 }
 
 func instinit(ctxt *obj.Link) {
