@@ -1531,10 +1531,10 @@ func gcMarkTermination(stw worldStop) {
 		startTheWorldWithSema(now, stw)
 	})
 
-	// Flush the heap profile so we can start a new cycle next GC.
+	// Publish the heap profile so we can start a new cycle next GC.
 	// This is relatively expensive, so we don't do it with the
 	// world stopped.
-	mProf_Flush()
+	mProf_Publish()
 
 	// Prepare workbufs for freeing by the sweeper. We do this
 	// asynchronously because it can take non-trivial time.
@@ -2102,7 +2102,7 @@ func gcSweep(mode gcMode) bool {
 		// now happened, so we can make this profile cycle
 		// available immediately.
 		mProf_NextCycle()
-		mProf_Flush()
+		mProf_Publish()
 		return true
 	}
 
