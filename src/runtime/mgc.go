@@ -132,6 +132,7 @@ import (
 	"internal/cpu"
 	"internal/goarch"
 	"internal/goexperiment"
+	"internal/profilerecord"
 	"internal/runtime/atomic"
 	"internal/runtime/gc"
 	"unsafe"
@@ -583,10 +584,15 @@ func GC() {
 	// Now we're really done with sweeping, so we can publish the
 	// stable heap profile. Only do this if we haven't already hit
 	// another mark termination.
+	//
+	// Capture the runtime metrics snapshot for the heap profile before
+	// acquirem: captureMProfMetrics takes mheap_.lock on the system stack.
+	var metrics profilerecord.MemProfileMetrics
+	captureMProfMetrics(&metrics)
 	mp := acquirem()
 	cycle := work.cycles.Load()
 	if cycle == n+1 || (gcphase == _GCmark && cycle == n+2) {
-		mProf_PostSweep()
+		mProf_PostSweep(&metrics)
 	}
 	releasem(mp)
 }

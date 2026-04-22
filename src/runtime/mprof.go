@@ -170,6 +170,13 @@ var (
 	buckhash atomic.UnsafePointer // *buckhashArray
 
 	mProfCycle mProfCycleHolder
+
+	// mProfHeapStats is a snapshot of the heapStats taken during the most recent
+	// mark termination STW.
+	mProfHeapStats heapStatsDelta
+	// mProfMetrics is the snapshot of runtime metrics captured by the most
+	// recent mProf_PublishLocked call. Protected by profMemActiveLock.
+	mProfMetrics profilerecord.MemProfileMetrics
 )
 
 type buckhashArray [buckHashSize]atomic.UnsafePointer // *bucket
@@ -368,6 +375,11 @@ func eqslice(x, y []uintptr) bool {
 // frees after the world is started again count towards a new heap
 // profiling cycle.
 func mProf_NextCycle() {
+	if !disableMemoryProfiling {
+		mProfHeapStats = heapStatsDelta{}
+		memstats.heapStats.unsafeRead(&mProfHeapStats)
+	}
+
 	mProfCycle.increment()
 }
 
@@ -379,19 +391,88 @@ func mProf_NextCycle() {
 // contrast with mProf_NextCycle, this is somewhat expensive, but safe
 // to do concurrently.
 func mProf_Publish() {
+	// Capture metrics outside profMemActiveLock so we can safely take
+	// mheap_.lock; install the snapshot under the lock just before
+	// mProf_PublishLocked records the cycle.
+	var metrics profilerecord.MemProfileMetrics
+	captureMProfMetrics(&metrics)
+
 	lock(&profMemActiveLock)
 	cycle := mProfCycle.read()
 	if mProfCycleNext(mProfCycle.published) == cycle {
+		mProfMetrics = metrics
 		mProf_PublishLocked(cycle)
 	}
 	mProf_ClearLocked(cycle)
 	unlock(&profMemActiveLock)
 }
 
+// captureMProfMetrics reads a fresh snapshot of the runtime metrics
+// associated with the heap profile into out. Heap-derived fields are
+// computed from mProfHeapStats, which is captured at mark termination for
+// the heap profile cycle being published. RSS and non-heap sys stats are
+// read at publish time.
+//
+// It must be called with no runtime locks held: it acquires mheap_.lock
+// (for mspan/mcache stats), which is not safe to acquire while holding
+// profMemActiveLock.
+//
+// Callers install the returned snapshot into mProfMetrics under
+// profMemActiveLock immediately before calling mProf_PublishLocked, so
+// that readers see the (records, metrics) pair from the same publish.
+//
+// TODO: The heap-derived fields are read from the most recent mark
+// termination snapshot, but this function must run without profMemActiveLock
+// because it acquires mheap_.lock. If mProfCycle advances between this
+// capture and the caller installing the result, the metrics may be paired with
+// the wrong heap profile cycle. Fix this by associating metric snapshots with
+// heap profile cycles (or by retrying capture/install until they observe the
+// same cycle) before these metrics are emitted in heap profiles.
+func captureMProfMetrics(out *profilerecord.MemProfileMetrics) {
+	*out = profilerecord.MemProfileMetrics{}
+
+	if rss, ok := sysRSS(); ok {
+		out.RSS = rss
+	}
+
+	// /gc/heap/live:bytes. heapMarked is set during mark termination and
+	// stable until the next mark termination, so a plain uint64 read is
+	// fine.
+	out.HeapLive = gcController.heapMarked
+
+	// Use the heap stats snapshot taken at the most recent mark termination,
+	// matching the heap profile cycle being published, but use the same
+	// derivation code as runtime/metrics for the derived fields. Non-heap
+	// sys stats are read below at publish time.
+	var stats statAggregate
+	stats.heapStats.heapStatsDelta = mProfHeapStats
+	stats.heapStats.computeDerived()
+	stats.sysStats.compute() // takes mheap_.lock
+
+	out.MemoryClassesHeapFree = stats.memoryClassHeapFree()
+	out.MemoryClassesHeapObjects = stats.memoryClassHeapObjects()
+	out.MemoryClassesHeapReleased = stats.memoryClassHeapReleased()
+	out.MemoryClassesHeapStacks = stats.memoryClassHeapStacks()
+	out.MemoryClassesHeapUnused = stats.memoryClassHeapUnused()
+	out.MemoryClassesOSStacks = stats.sysStats.stacksSys
+	out.MemoryClassesOther = stats.sysStats.otherSys
+	out.MemoryClassesProfilingBuckets = stats.sysStats.buckHashSys
+	out.MemoryClassesMetadataOther = stats.memoryClassMetadataOther()
+	out.MemoryClassesMetadataMCacheFree = stats.memoryClassMetadataMCacheFree()
+	out.MemoryClassesMetadataMCacheInuse = stats.sysStats.mCacheInUse
+	out.MemoryClassesMetadataMSpanFree = stats.memoryClassMetadataMSpanFree()
+	out.MemoryClassesMetadataMSpanInuse = stats.sysStats.mSpanInUse
+	out.MemoryClassesTotal = stats.memoryClassTotal()
+}
+
 // mProf_PublishLocked accumulates the profile events from cycle into the active
 // profile. It zeroes the cycle's alloc count so the slot can be reused for
 // allocations in the next cycle, but intentionally retains the cycle's frees
 // until mProf_ClearLocked removes them later.
+//
+// The caller is responsible for installing a fresh metrics snapshot into
+// mProfMetrics (via captureMProfMetrics) before calling this function, so
+// that the metrics correspond to the cycle being published.
 func mProf_PublishLocked(cycle uint32) {
 	assertLockHeld(&profMemActiveLock)
 	if mProfCycleNext(mProfCycle.published) != cycle {
@@ -439,7 +520,12 @@ func mProf_ClearLocked(current uint32) {
 // completed. This has the effect of publishing the heap profile
 // snapshot as of the last mark termination without advancing the heap
 // profile cycle.
-func mProf_PostSweep() {
+//
+// metrics must hold a freshly captured runtime metrics snapshot taken by
+// the caller before any acquirem-style preemption disable: this function
+// runs under acquirem in finishsweep_m, and captureMProfMetrics must take
+// mheap_.lock on the system stack.
+func mProf_PostSweep(metrics *profilerecord.MemProfileMetrics) {
 	// Flush cycle C+1 to the active profile so everything as of
 	// the last mark termination becomes visible. *Don't* advance
 	// the cycle, since we're still accumulating allocs in cycle
@@ -449,6 +535,7 @@ func mProf_PostSweep() {
 	current := mProfCycle.read()
 	cycle := mProfCycleNext(current)
 	if mProfCycleNext(mProfCycle.published) == cycle {
+		mProfMetrics = *metrics
 		mProf_PublishLocked(cycle)
 	}
 	mProf_ClearLocked(current)
@@ -953,12 +1040,17 @@ func MemProfile(p []MemProfileRecord, inuseZero bool) (n int, ok bool) {
 	return memProfileInternal(len(p), inuseZero, func(r profilerecord.MemProfileRecord) {
 		copyMemProfileRecord(&p[0], r)
 		p = p[1:]
-	})
+	}, nil)
 }
 
 // memProfileInternal returns the number of records n in the profile. If there
 // are less than size records, copyFn is invoked for each record, and ok returns
 // true.
+//
+// If metricsOut is non-nil, the snapshot of runtime metrics captured at the
+// last publish is copied into it before the lock is released, so callers that
+// care about consistency between the records and the metrics see a pair taken
+// under the same profMemActiveLock hold (no drift across a concurrent GC).
 //
 // The linker set disableMemoryProfiling to true to disable memory profiling
 // if this function is not reachable. Mark it noinline to ensure the symbol exists.
@@ -966,16 +1058,30 @@ func MemProfile(p []MemProfileRecord, inuseZero bool) (n int, ok bool) {
 // See also disableMemoryProfiling above and cmd/link/internal/ld/lib.go:linksetup.
 //
 //go:noinline
-func memProfileInternal(size int, inuseZero bool, copyFn func(profilerecord.MemProfileRecord)) (n int, ok bool) {
+func memProfileInternal(size int, inuseZero bool, copyFn func(profilerecord.MemProfileRecord), metricsOut *profilerecord.MemProfileMetrics) (n int, ok bool) {
 	lock(&profMemActiveLock)
 	cycle := mProfCycle.read()
-	// If we're between mProf_NextCycle and mProf_Publish, take care
-	// of flushing to the active profile so we only have to look
-	// at the active profile below. Also clear any older retained
-	// frees that are now safe to reuse.
+	// If we're between mProf_NextCycle and mProf_Publish, we need to
+	// flush to the active profile so we only have to look at the active
+	// profile below. captureMProfMetrics cannot be called while holding
+	// profMemActiveLock (it acquires mheap_.lock), so drop the lock to
+	// capture, then re-acquire and recheck. Other
+	// publishers (mProf_Publish, mProf_PostSweep, or another concurrent
+	// reader) may have raced ahead while the lock was released; in that
+	// case mProfMetrics already holds a fresh snapshot from their
+	// publish and we discard ours.
 	if mProfCycleNext(mProfCycle.published) == cycle {
-		mProf_PublishLocked(cycle)
+		unlock(&profMemActiveLock)
+		var metrics profilerecord.MemProfileMetrics
+		captureMProfMetrics(&metrics)
+		lock(&profMemActiveLock)
+		cycle = mProfCycle.read()
+		if mProfCycleNext(mProfCycle.published) == cycle {
+			mProfMetrics = metrics
+			mProf_PublishLocked(cycle)
+		}
 	}
+	// Clear any older retained frees that are now safe to reuse.
 	mProf_ClearLocked(cycle)
 	clear := true
 	head := (*bucket)(mbuckets.Load())
@@ -1026,6 +1132,15 @@ func memProfileInternal(size int, inuseZero bool, copyFn func(profilerecord.MemP
 			}
 		}
 	}
+	if metricsOut != nil {
+		// Copy under the lock so the returned metrics snapshot is
+		// paired with the records we just emitted. A concurrent
+		// mProf_PublishLocked (from the GC path or another reader)
+		// cannot run until we release profMemActiveLock, so the
+		// mProfMetrics value here is the one that corresponds to
+		// the mp.active values observed above.
+		*metricsOut = mProfMetrics
+	}
 	unlock(&profMemActiveLock)
 	return
 }
@@ -1048,12 +1163,20 @@ func copyMemProfileRecord(dst *MemProfileRecord, src profilerecord.MemProfileRec
 	clear(dst.Stack0[i:])
 }
 
-//go:linkname pprof_memProfileInternal
-func pprof_memProfileInternal(p []profilerecord.MemProfileRecord, inuseZero bool) (n int, ok bool) {
+// pprof_memProfileInternal is the runtime/pprof entry point into
+// memProfileInternal.
+//
+// If metrics is non-nil, it is populated with runtime metrics captured at
+// the moment the active heap profile was last published. The metrics are
+// read under the same profMemActiveLock hold that produced the records,
+// so the two are consistent (no drift across a concurrent GC publish).
+//
+//go:linknamestd pprof_memProfileInternal runtime/pprof.pprof_memProfileInternal
+func pprof_memProfileInternal(p []profilerecord.MemProfileRecord, inuseZero bool, metrics *profilerecord.MemProfileMetrics) (n int, ok bool) {
 	return memProfileInternal(len(p), inuseZero, func(r profilerecord.MemProfileRecord) {
 		p[0] = r
 		p = p[1:]
-	})
+	}, metrics)
 }
 
 func iterate_memprof(fn func(*bucket, uintptr, *uintptr, uintptr, uintptr, uintptr)) {
