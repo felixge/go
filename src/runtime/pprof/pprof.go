@@ -262,6 +262,7 @@ func lockProfiles() {
 			"allocs":        allocsProfile,
 			"block":         blockProfile,
 			"mutex":         mutexProfile,
+			"rss":           rssProfile,
 			"goroutineleak": goroutineLeakProfile,
 		}
 	}
