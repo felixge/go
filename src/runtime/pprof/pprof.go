@@ -109,6 +109,7 @@ import (
 //	goroutineleak  - stack traces of all leaked goroutines
 //	allocs         - a sampling of all past memory allocations
 //	heap           - a sampling of memory allocations of live objects
+//	memory         - a breakdown of process memory usage at the last completed GC
 //	threadcreate   - stack traces that led to the creation of new OS threads
 //	block          - stack traces that led to blocking on synchronization primitives
 //	mutex          - stack traces of holders of contended mutexes
@@ -262,6 +263,7 @@ func lockProfiles() {
 			"allocs":        allocsProfile,
 			"block":         blockProfile,
 			"mutex":         mutexProfile,
+			"memory":        memoryProfile,
 			"goroutineleak": goroutineLeakProfile,
 		}
 	}
