@@ -1513,6 +1513,13 @@ func gcMarkTermination(stw worldStop) {
 		gcRestoreSyncObjects()
 	}
 
+	if stwSwept {
+		// Sweeping is already complete. Collect runtime metrics before
+		// restarting the world so they are up to date when this cycle is published.
+		i := mProfCycleNext(mProfCycle.read()) % uint32(len(memRecord{}.future))
+		captureMProfMetrics(&mProfMetrics[i], mProfHeapStats[i], mProfMCacheAllocBytes[i].Load())
+	}
+
 	var goroutineLeakDone bool
 	systemstack(func() {
 		// Pull the GC out of goroutine leak detection mode.
@@ -1535,6 +1542,7 @@ func gcMarkTermination(stw worldStop) {
 	// Publish the heap profile so we can start a new cycle next GC.
 	// This is relatively expensive, so we don't do it with the
 	// world stopped.
+
 	mProf_Publish()
 	if stwSwept {
 		// Sweeping has already completed, so publish its frees without
@@ -1578,6 +1586,12 @@ func gcMarkTermination(stw worldStop) {
 		}
 		pp.pinnerCache = nil
 	})
+	if !stwSwept {
+		// All stale mcaches are now accounted for, so we can publish
+		// the memory metrics for this profile cycle.
+		i := mProfCycleNext(mProfCycle.read()) % uint32(len(memRecord{}.future))
+		captureMProfMetrics(&mProfMetrics[i], mProfHeapStats[i], mProfMCacheAllocBytes[i].Load())
+	}
 	if sl.valid {
 		// Now that we've swept stale spans in mcaches, they don't
 		// count against unswept spans.
