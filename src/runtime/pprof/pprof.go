@@ -154,7 +154,7 @@ import (
 // runtime's heap metrics.
 //
 // Non-Go memory, such as memory allocated by C libraries, is estimated as RSS
-// minus Go memory, and is only reported where RSS is available (currently
+// minus Go memory and is only reported where RSS is available (currently
 // Linux and Darwin). Prefer this profile to the heap profile.
 //
 // # Block profile

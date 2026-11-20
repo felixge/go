@@ -20,6 +20,8 @@ type rssVirtualFrame string
 const (
 	rssFrameGoMemory         rssVirtualFrame = "[Go Memory]"
 	rssFrameNonGoMemory      rssVirtualFrame = "[Non-Go Memory]"
+	rssFrameShared           rssVirtualFrame = "[Shared]"
+	rssFrameAnonymous        rssVirtualFrame = "[Anonymous]"
 	rssFrameStacks           rssVirtualFrame = "[Stacks]"
 	rssFrameGoroutineStacks  rssVirtualFrame = "[Goroutine Stacks]"
 	rssFrameOSStacks         rssVirtualFrame = "[OS Stacks]"
@@ -113,7 +115,7 @@ func writeMemoryProto(w io.Writer, p []profilerecord.MemProfileRecord, rate int6
 	}
 
 	frames := []rssVirtualFrame{
-		rssFrameGoMemory, rssFrameNonGoMemory,
+		rssFrameGoMemory, rssFrameNonGoMemory, rssFrameShared, rssFrameAnonymous,
 		rssFrameStacks, rssFrameGoroutineStacks, rssFrameOSStacks,
 		rssFrameRuntime, rssFrameMetadata,
 		rssFrameMSpan, rssFrameInUseMSpans, rssFrameFreeMSpans,
@@ -244,7 +246,15 @@ func writeMemoryProto(w io.Writer, p []profilerecord.MemProfileRecord, rate int6
 		b.pb.int64(tagProfile_Comment, b.stringIndex("RSS is unavailable on this system"))
 	case m.RSS <= goMemory:
 		b.pb.int64(tagProfile_Comment, b.stringIndex(fmt.Sprintf("RSS (%d bytes) is less than or equal to total Go memory (%d bytes)", m.RSS, goMemory)))
-	case m.RSS > goMemory:
+	case m.RSSHasShared:
+		// Preserve the non-Go total (RSS minus Go memory). If the Go
+		// estimate exceeds non-shared RSS, report no anonymous non-Go
+		// memory usage and cap the shared sample at the non-Go total.
+		nonGo := m.RSS - goMemory
+		shared := min(m.RSSShared, nonGo)
+		emitSample(int64(shared), []rssVirtualFrame{rssFrameNonGoMemory, rssFrameShared}, nil, 0)
+		emitSample(int64(nonGo-shared), []rssVirtualFrame{rssFrameNonGoMemory, rssFrameAnonymous}, nil, 0)
+	default:
 		emitSample(int64(m.RSS-goMemory), []rssVirtualFrame{rssFrameNonGoMemory}, nil, 0)
 	}
 	return b.build()

@@ -73,7 +73,13 @@ func TestMemoryProfileStructure(t *testing.T) {
 		rssPath(rssFrameGoMemory, rssFrameHeap, rssFrameDeadHeap),
 		rssPath(rssFrameGoMemory, rssFrameHeap, rssFrameUnusedHeap),
 		rssPath(rssFrameGoMemory, rssFrameHeap, rssFrameFreeHeap),
-		rssPath(rssFrameNonGoMemory),
+	}
+	if runtime.GOOS == "linux" {
+		virtualPrefixes = append(virtualPrefixes,
+			rssPath(rssFrameNonGoMemory, rssFrameShared),
+			rssPath(rssFrameNonGoMemory, rssFrameAnonymous))
+	} else {
+		virtualPrefixes = append(virtualPrefixes, rssPath(rssFrameNonGoMemory))
 	}
 
 	livePrefix := rssPath(rssFrameGoMemory, rssFrameHeap, rssFrameLiveHeap)

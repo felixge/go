@@ -2198,4 +2198,4 @@ func FuncNamePiecesForPrint(name string) (string, string, string, string, string
 
 var InHeapOrStack = inHeapOrStack
 
-func SysRSS() (uint64, bool) { return sysRSS() }
+func SysRSS() (rss, shared uint64, hasShared bool) { return sysRSS() }
