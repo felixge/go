@@ -20,6 +20,8 @@ Go memory is further split into the heap, stacks, and runtime metadata.
 The heap includes the same live object samples as the heap profile, as well
 as dead objects the most recently completed garbage collection found
 unreachable.
+On Linux, non-Go memory is further split into file-backed and shared memory,
+and anonymous memory.
 
 Special thanks to Felix Geisendörfer and Nick Ripley at Datadog for
 contributing this work.
