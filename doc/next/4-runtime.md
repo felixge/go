@@ -21,5 +21,8 @@ The heap includes the same live object samples as the heap profile, as well
 as dead objects the most recently completed garbage collection found
 unreachable.
 
+The runtime work that supports the memory profile can be turned off using
+`GODEBUG=memoryprofile=0`. If you encounter issues with it, please file an issue.
+
 Special thanks to Felix Geisendörfer and Nick Ripley at Datadog for
 contributing this work.
